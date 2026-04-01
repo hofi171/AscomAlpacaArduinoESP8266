@@ -1,3 +1,13 @@
 {
-  "C_Cpp.intelliSenseEngine": "default"
+  "C_Cpp.intelliSenseEngine": "default",
+  "chat.tools.terminal.autoApprove": {
+    "/^C:\\\\Users\\\\phofmann_adm\\\\\\.platformio\\\\penv\\\\Scripts\\\\platformio\\.exe run 2>&1 \\| Select-Object -First 100$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^C:\\\\Users\\\\phofmann_adm\\\\\\.platformio\\\\penv\\\\Scripts\\\\platformio\\.exe run$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
 }

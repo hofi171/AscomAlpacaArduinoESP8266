@@ -1,5 +1,5 @@
 // You can also set default log level by defining macro (default: INFO)
-#define DEBUGLOG_DEFAULT_LOG_LEVEL_TRACE
+#define DEBUGLOG_DEFAULT_LOG_LEVEL_INFO
 #include "DebugLog.h"
 
 #include <Arduino.h>
@@ -11,39 +11,31 @@
 #include <WiFiClient.h>
 // #include <ESPAsyncWebServer.h>
 #include <ESP8266mDNS.h>
+#include <EEPROM.h>
 
 #include "DebugLog.h"
 
 #include "alpaca_api/Alpaca_Errors.h"
 #include "alpaca_api/Alpaca_Management.h"
 #include "alpaca_api/Alpaca_Discovery.h"
+#include "WiFi_Config.h"
 // #include "Alpaca_Device_Focuser.h"
-#include "implementation/MySafetyMonitor.h"
-#include "implementation/MyFocuser.h"
-#include "implementation/MyDome.h"
-#include "implementation/MySwitch.h"
-#include "implementation/MyFilterWheel.h"
-#include "implementation/MyRotator.h"
+#include "implementation/ArduinoFocuser.h"
 
-#ifndef STASSID
-#define STASSID "yourSSID"
-#define STAPSK "yourPassword"
-#endif
+#define HOSTNAME "Arduino-Alpaca-Focuser"
 
-const char *ssid = STASSID;
-const char *password = STAPSK;
+const char *ssid;
+const char *password;
+const char *hostname = HOSTNAME;
 
 AsyncWebServer server(80); // default HTTP port for Alpaca API is 80
 
 AlpacaManagement *management = new AlpacaManagement();
 AlpacaDiscovery *discovery = nullptr; // Will be initialized after WiFi connection
+WiFiConfig wifiConfig; // WiFi configuration manager
 
-MySafetyMonitor *safetyMonitor = nullptr;
-MyFocuser *focuser = nullptr;
-MyDome *dome = nullptr;
-MySwitch *switchDevice = nullptr; 
-MyFilterWheel *filterWheel = nullptr;
-MyRotator *rotator = nullptr;
+ArduinoFocuser *focuser = nullptr;
+
 
 const int ledPin = 2; // GPIO2 is the built-in LED on most ESP8266 boards
 
@@ -52,19 +44,67 @@ void setup()
   LOG_INFO("Start Setup");
   pinMode(ledPin, OUTPUT);
   Serial.begin(115200);
+  EEPROM.begin(512);
+  
+  // Load WiFi credentials from EEPROM (if available)
+  String wifiSSID;
+  String wifiPassword;
+  
+  if (wifiConfig.loadFromEEPROM() && wifiConfig.hasConfig()) {
+    wifiSSID = wifiConfig.getSSID();
+    wifiPassword = wifiConfig.getPassword();
+    LOG_INFO("Using WiFi credentials from EEPROM");
+  
+  
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.hostname(hostname); // Set the device hostname
+  WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
-  // Wait for connection
+  // Wait for connection with timeout
   LOG_INFO("Wait for connection");
-  while (WiFi.status() != WL_CONNECTED)
+  int timeout_counter = 0;
+  const int timeout_limit = 20; // 10 seconds timeout (20 * 500ms)
+  
+  while (WiFi.status() != WL_CONNECTED && timeout_counter < timeout_limit)
   {
     delay(500);
     LOG_INFO(".");
+    timeout_counter++;
   }
-  LOG_INFO("");
-  LOG_INFO("Connected to %s", ssid);
-  LOG_INFO("IP address: %s", WiFi.localIP().toString().c_str());
+}
+  else {
+    LOG_WARN("No valid WiFi credentials found in EEPROM. Please connect to the device's Access Point and configure WiFi settings.");
+    wifiSSID = ""; // Empty SSID will trigger AP mode
+  }
+  // Check if connection was successful
+  if (WiFi.status() == WL_CONNECTED) {
+    LOG_INFO("");
+    LOG_INFO("Connected to %s", wifiSSID.c_str());
+    LOG_INFO("IP address: %s", WiFi.localIP().toString().c_str());
+    LOG_INFO("Hostname: %s.local", hostname);
+  } else {
+    // Connection failed - start AP mode
+    LOG_WARN("Failed to connect to WiFi network: %s", wifiSSID.c_str());
+    LOG_INFO("Starting Access Point mode...");
+    
+    WiFi.mode(WIFI_AP);
+    
+    // Create AP name from hostname
+    String apSSID = String(hostname);
+    
+    // Start AP without password
+    bool apStarted = WiFi.softAP(apSSID.c_str());
+    
+    if (apStarted) {
+      IPAddress apIP = WiFi.softAPIP();
+      LOG_INFO("Access Point started successfully");
+      LOG_INFO("AP SSID: %s", apSSID.c_str());
+      LOG_INFO("AP IP address: %s", apIP.toString().c_str());
+      LOG_INFO("Connect to '%s' WiFi network and access at http://%s", apSSID.c_str(), apIP.toString().c_str());
+    } else {
+      LOG_ERROR("Failed to start Access Point");
+    }
+  }
 
   try
   {
@@ -75,27 +115,14 @@ void setup()
 
     // focuser = new AlpacaDeviceFocuser("My Focuser", 0,"This is a test focuser device", server);
 
-    LOG_INFO("Start safetyMonitor = new MySafetyMonitor(...);");
-    safetyMonitor = new MySafetyMonitor("My Safety Monitor", 0, "This is a test safety monitor device", server, 5);
-    LOG_INFO("Done safetyMonitor = new MySafetyMonitor(...);");
+   
+    LOG_INFO("Start focuser = new ArduinoFocuser(...);");
+    focuser = new ArduinoFocuser(HOSTNAME, 0, "Arduino Alpaca Focuser based on ESP8266 using a DS18B20 temperature sensor and ULN2003 stepper driver", server, 10000, 10);
+    LOG_INFO("Done focuser = new ArduinoFocuser(...);");
 
-    LOG_INFO("Start focuser = new MyFocuser(...);");
-    focuser = new MyFocuser("My Focuser", 0, "This is a test focuser device", server, 200, 10);
-    LOG_INFO("Done focuser = new MyFocuser(...);");
-
-    LOG_INFO("Start dome = new MyDome(...);");
-    dome = new MyDome("My Dome", 0, "This is a test dome device", server, true, true);
-    LOG_INFO("Done dome = new MyDome(...);");
-
-    LOG_INFO("Start switchDevice = new MySwitch(...);");
-    switchDevice = new MySwitch("My Switch", 0, "This is a test switch device", server, 4);
-    LOG_INFO("Done switchDevice = new MySwitch(...);");
 
     LOG_INFO("Start management->registerDevice(...);");
-    management->registerDevice(safetyMonitor->GetDeviceName(), safetyMonitor->GetDeviceType(), safetyMonitor->GetDeviceNumber(), safetyMonitor);
-    management->registerDevice(focuser->GetDeviceName(), focuser->GetDeviceType(), focuser->GetDeviceNumber(), focuser);
-    management->registerDevice(dome->GetDeviceName(), dome->GetDeviceType(), dome->GetDeviceNumber(), dome);
-    management->registerDevice(switchDevice->GetDeviceName(), switchDevice->GetDeviceType(), switchDevice->GetDeviceNumber(), switchDevice);
+    management->registerDevice(server, focuser->GetDeviceName(), focuser->GetDeviceType(), focuser->GetDeviceNumber(), focuser);
     LOG_INFO("Done management->registerDevice(...);");
   }
   catch (const std::exception &e)
@@ -140,12 +167,11 @@ void setup()
 void loop(void)
 {
  focuser->update(); // Update focuser state (handles movement and temperature compensation)
- dome->update(); // Update dome state (handles movement and shutter control)
  
   // Handle Alpaca Discovery requests
   if (discovery != nullptr)
   {
     discovery->handleDiscovery();
   }
-  delay(10); // Small delay to prevent watchdog timer issues
+  //delay(2); // Small delay to prevent watchdog timer issues
 }

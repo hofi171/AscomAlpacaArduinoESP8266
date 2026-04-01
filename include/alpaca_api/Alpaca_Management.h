@@ -94,10 +94,18 @@ void handleMgmtDescription(AsyncWebServerRequest *request)
     request->send(200, "application/json", BuildMgmtDescription(clientID, clientTransID, 0) );
 }
 
-void registerDevice( String devicename, String devicetype, int devicenumber, AplacaDevice* device )
+void registerDevice(AsyncWebServer &server, String devicename, String devicetype, int devicenumber, AplacaDevice* device )
 {
     LOG_DEBUG("registerDevice request - DeviceName: " + devicename + " DeviceType: " + devicetype + " DeviceNumber: " + String(devicenumber));
     RegisteredDevices.push_back( device );
+
+    if(device->hasSetupHandler()) {
+        LOG_DEBUG("Calling setup handler for device: " + devicename);
+        
+        server.on("/setup/v1/"+device->GetDeviceType()+"/"+String(device->GetDeviceNumber())+"/setup", HTTP_GET, [this, device](AsyncWebServerRequest *request){ device->setupHandler(request); });
+        server.on("/setup/v1/"+device->GetDeviceType()+"/"+String(device->GetDeviceNumber())+"/setup", HTTP_POST, [this, device](AsyncWebServerRequest *request){ device->setupHandler(request); });
+        
+    }
 }
 
 void unregisterDevice( String devicename, String devicetype, int devicenumber )

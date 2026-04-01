@@ -45,10 +45,11 @@ public:
    * @param devicenumber Device number (for multiple devices of same type)
    * @param description Human-readable description of the device
    * @param server Reference to the AsyncWebServer instance
+   * @param hasSetup Whether device has a setup page
    */
   AlpacaDeviceFocuser(String devicename, int devicenumber, String description,
-                      AsyncWebServer &server)
-      : AplacaDevice(devicename, "focuser", devicenumber, server) {
+                      AsyncWebServer &server, bool hasSetup = false)
+      : AplacaDevice(devicename, "focuser", devicenumber, server, hasSetup) {
     Description = description;
     registerHandlers(server);
     LOG_DEBUG("AlpacaDeviceFocuser created:", devicename);
@@ -661,7 +662,7 @@ public:
       return;
     }
     
-    LOG_DEBUG("Moving focuser to position:", position);
+    LOG_INFO("Moving focuser to position:", position);
 
     // Move focuser via device implementation
     Move(position);
@@ -1097,8 +1098,14 @@ public:
     root["ErrorNumber"] = static_cast<int>(AlpacaError::Success);
     root["ErrorMessage"] = "";
     JsonArray &values = root.createNestedArray("Value");
+    (void)values; // Mark as intentionally unused
     root.printTo(message);
     request->send(200, "application/json", message);
+  }
+
+  void setupHandler(AsyncWebServerRequest *request) override {
+    // Default implementation - can be overridden in derived classes
+    request->send(200, "text/html", "<html><body><h1>Focuser Setup</h1><p>No configuration required.</p></body></html>");
   }
 };
 

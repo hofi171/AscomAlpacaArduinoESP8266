@@ -3,6 +3,7 @@
 
 #include "UUID.h"
 #include "DebugLog.h"
+#include <EEPROM.h>
 
 class AplacaDevice
 {
@@ -11,6 +12,12 @@ private:
     String DeviceType;
     int DeviceNumber;
     String UniqueID;
+    bool HasSetup = false;
+    
+    // EEPROM storage for UniqueID
+    // ArduinoStepper uses bytes 0-7, ArduinoFocuser uses bytes 8-15
+    static const int EEPROM_UNIQUEID_ADDR = 16;  // Start address for UniqueID storage
+    static const int EEPROM_UNIQUEID_LENGTH = 36; // Standard UUID length (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
 
 
     String GenerateUniqueID()
@@ -18,6 +25,77 @@ private:
         GUID guid;
         guid.generate();
         return guid.toCharArray();
+    }
+    
+    /**
+     * @brief Load UniqueID from EEPROM
+     * @return true if valid ID was loaded, false otherwise
+     */
+    bool LoadUniqueIDFromEEPROM()
+    {
+        char buffer[EEPROM_UNIQUEID_LENGTH + 1];
+        
+        // Read the UniqueID from EEPROM
+        for (int i = 0; i < EEPROM_UNIQUEID_LENGTH; i++) {
+            buffer[i] = EEPROM.read(EEPROM_UNIQUEID_ADDR + i);
+        }
+        buffer[EEPROM_UNIQUEID_LENGTH] = '\0'; // Null terminate
+        
+        String loadedID = String(buffer);
+        
+        // Validate the loaded ID (should be 36 characters and contain hyphens at positions 8, 13, 18, 23)
+        if (loadedID.length() == 36 && 
+            loadedID.charAt(8) == '-' && 
+            loadedID.charAt(13) == '-' && 
+            loadedID.charAt(18) == '-' && 
+            loadedID.charAt(23) == '-') {
+            
+            // Additional validation: check if it contains valid hex characters
+            bool valid = true;
+            for (int i = 0; i < 36; i++) {
+                char c = loadedID.charAt(i);
+                if (i == 8 || i == 13 || i == 18 || i == 23) {
+                    if (c != '-') {
+                        valid = false;
+                        break;
+                    }
+                } else {
+                    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            
+            if (valid) {
+                UniqueID = loadedID;
+                LOG_INFO("Loaded UniqueID from EEPROM: " + UniqueID);
+                return true;
+            }
+        }
+        
+        LOG_WARN("Invalid UniqueID in EEPROM, will generate new one");
+        return false;
+    }
+    
+    /**
+     * @brief Save UniqueID to EEPROM
+     */
+    void SaveUniqueIDToEEPROM()
+    {
+        // Write the UniqueID to EEPROM
+        int idLength = (int)UniqueID.length();
+        for (int i = 0; i < EEPROM_UNIQUEID_LENGTH && i < idLength; i++) {
+            EEPROM.write(EEPROM_UNIQUEID_ADDR + i, UniqueID.charAt(i));
+        }
+        
+        // Pad with zeros if UniqueID is shorter than expected
+        for (int i = idLength; i < EEPROM_UNIQUEID_LENGTH; i++) {
+            EEPROM.write(EEPROM_UNIQUEID_ADDR + i, 0);
+        }
+        
+        EEPROM.commit(); // Commit changes to EEPROM (required for ESP8266)
+        LOG_INFO("Saved UniqueID to EEPROM: " + UniqueID);
     }
 
     void registerCommonDeviceHandlers(AsyncWebServer &server){  
@@ -61,13 +139,23 @@ public:
     virtual void interfaceVersionHandler(AsyncWebServerRequest *request) = 0;
     virtual void nameHandler(AsyncWebServerRequest *request) = 0;
     virtual void supportedActionsHandler(AsyncWebServerRequest *request) = 0;
+    virtual bool hasSetupHandler() {return HasSetup;  };
+    virtual void setupHandler(AsyncWebServerRequest *request) = 0;
 
     //Constructor and getters
-    AplacaDevice( String devicename, String devicetype, int devicenumber, AsyncWebServer &server ) {
+    AplacaDevice( String devicename, String devicetype, int devicenumber, AsyncWebServer &server, bool hasSetup=false) {
         DeviceName = devicename;
         DeviceType = devicetype;
         DeviceNumber = devicenumber;
-        UniqueID = GenerateUniqueID();
+        HasSetup = hasSetup;
+        
+        // Try to load UniqueID from EEPROM, generate new one if invalid
+        if (!LoadUniqueIDFromEEPROM()) {
+            UniqueID = GenerateUniqueID();
+            SaveUniqueIDToEEPROM();
+            LOG_INFO("Generated new UniqueID: " + UniqueID);
+        }
+        
         registerCommonDeviceHandlers(server);
     }
     ~AplacaDevice() {}
