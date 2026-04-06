@@ -20,9 +20,10 @@
 #include "alpaca_api/Alpaca_Discovery.h"
 #include "WiFi_Config.h"
 // #include "Alpaca_Device_Focuser.h"
-#include "implementation/ArduinoFocuser.h"
+#include "implementation/ArduinoDome.h"
+#include "implementation/ArduinoSafetyMonitor.h"
 
-#define HOSTNAME "Arduino-Alpaca-Focuser"
+#define HOSTNAME "Arduino-Alpaca-Dome"
 
 const char *ssid;
 const char *password;
@@ -34,7 +35,8 @@ AlpacaManagement *management = new AlpacaManagement();
 AlpacaDiscovery *discovery = nullptr; // Will be initialized after WiFi connection
 WiFiConfig wifiConfig; // WiFi configuration manager
 
-ArduinoFocuser *focuser = nullptr;
+ArduinoDome *dome = nullptr;
+ArduinoSafetyMonitor *safetyMonitor = nullptr;
 
 
 const int ledPin = 2; // GPIO2 is the built-in LED on most ESP8266 boards
@@ -112,18 +114,24 @@ void setup()
     LOG_INFO("Start management->registerManagementHandlers(server);");
     management->registerManagementHandlers(server);
     LOG_INFO("Done management->registerManagementHandlers(server);");
-
-    // focuser = new AlpacaDeviceFocuser("My Focuser", 0,"This is a test focuser device", server);
-
    
-    LOG_INFO("Start focuser = new ArduinoFocuser(...);");
-    focuser = new ArduinoFocuser(HOSTNAME, 0, "Arduino Alpaca Focuser based on ESP8266 using a DS18B20 temperature sensor and ULN2003 stepper driver", server, 10000, 10);
-    LOG_INFO("Done focuser = new ArduinoFocuser(...);");
+    LOG_INFO("Start dome = new ArduinoDome(...);");
+    // pin 5= shutter open drive, pin 4= shutter close drive, pin 3= shutter open sensor, pin 2= shutter close sensor
+    dome = new ArduinoDome(HOSTNAME, 0, "Arduino Alpaca Dome based on ESP8266", server, true, false, -1, -1, -1, 5, 4, 3, 2, -1); 
+    LOG_INFO("Done dome = new ArduinoDome(...);");
 
 
-    LOG_INFO("Start management->registerDevice(...);");
-    management->registerDevice(server, focuser->GetDeviceName(), focuser->GetDeviceType(), focuser->GetDeviceNumber(), focuser);
-    LOG_INFO("Done management->registerDevice(...);");
+    LOG_INFO("Start management->registerDevice(...) dome;");
+    management->registerDevice(server, dome->GetDeviceName(), dome->GetDeviceType(), dome->GetDeviceNumber(), dome);
+    LOG_INFO("Done management->registerDevice(...) dome;");
+
+    LOG_INFO("Start safetyMonitor = new ArduinoSafetyMonitor(...);");
+    safetyMonitor = new ArduinoSafetyMonitor(HOSTNAME, 0, "Arduino Alpaca Safety Monitor based on ESP8266", server);
+    LOG_INFO("Done safetyMonitor = new ArduinoSafetyMonitor(...);");
+
+    LOG_INFO("Start management->registerDevice(...) safetyMonitor;");
+    management->registerDevice(server, safetyMonitor->GetDeviceName(), safetyMonitor->GetDeviceType(), safetyMonitor->GetDeviceNumber(), safetyMonitor);
+    LOG_INFO("Done management->registerDevice(...) safetyMonitor;");
   }
   catch (const std::exception &e)
   {
@@ -166,7 +174,7 @@ void setup()
 
 void loop(void)
 {
- focuser->update(); // Update focuser state (handles movement and temperature compensation)
+ dome->update(); // Update dome state (handles movement and shutter control)
  
   // Handle Alpaca Discovery requests
   if (discovery != nullptr)

@@ -58,10 +58,11 @@ public:
    * @param devicenumber Device number (for multiple devices of same type)
    * @param description Human-readable description of the device
    * @param server Reference to the AsyncWebServer instance
+     * @param hasSetup Whether device has a setup page
    */
   AlpacaDeviceDome(String devicename, int devicenumber, String description,
-                   AsyncWebServer &server)
-      : AplacaDevice(devicename, "dome", devicenumber, server) {
+             AsyncWebServer &server, bool hasSetup = false)
+      : AplacaDevice(devicename, "dome", devicenumber, server, hasSetup) {
     Description = description;
     registerHandlers(server);
     LOG_DEBUG("AlpacaDeviceDome created:", devicename);
@@ -1609,6 +1610,31 @@ public:
     root["ErrorNumber"] = static_cast<int>(AlpacaError::Success);
     root["ErrorMessage"] = "";
     JsonArray &values = root.createNestedArray("Value");
+    root.printTo(message);
+    request->send(200, "application/json", message);
+  }
+
+  void setupHandler(AsyncWebServerRequest *request) override {
+    int clientIDInt = 0;
+    int clientTransID = 0;
+
+    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+      String message;
+      DynamicJsonBuffer jsonBuff(256);
+      JsonObject &root = jsonBuff.createObject();
+      AlpacaResponseBuilder(root, clientIDInt, clientTransID, ++serverTransID,
+                           "invalid_parameters", AlpacaError::InvalidValue, "Invalid ClientID or ClientTransactionID");
+      root.printTo(message);
+      request->send(400, "application/json", message);
+      return;
+    }
+
+    String message;
+    DynamicJsonBuffer jsonBuff(256);
+    JsonObject &root = jsonBuff.createObject();
+    AlpacaResponseBuilder(root, clientIDInt, clientTransID, ++serverTransID,
+                          "not_implemented", AlpacaError::NotImplemented,
+                          "Setup is not implemented for this Dome device");
     root.printTo(message);
     request->send(200, "application/json", message);
   }

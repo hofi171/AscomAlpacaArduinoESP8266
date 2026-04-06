@@ -8,6 +8,8 @@
     "/^C:\\\\Users\\\\phofmann_adm\\\\\\.platformio\\\\penv\\\\Scripts\\\\platformio\\.exe run$/": {
       "approve": true,
       "matchCommandLine": true
-    }
+    },
+    "platformio": true,
+    "&": true
   }
 }

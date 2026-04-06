@@ -200,8 +200,8 @@ public:
    * @param server Reference to the AsyncWebServer instance
    */
   AlpacaDeviceSafetyMonitor(String devicename, int devicenumber, String description,
-                            AsyncWebServer &server)
-      : AplacaDevice(devicename, "safetymonitor", devicenumber, server)
+                            AsyncWebServer &server, bool hasSetup = false)
+      : AplacaDevice(devicename, "safetymonitor", devicenumber, server, hasSetup)
   {
     Description = description;
     registerHandlers(server);
