@@ -113,7 +113,7 @@ void setup()
     LOG_INFO("Done management->registerManagementHandlers(server);");
 
     LOG_INFO("Start switchDevice = new ArduinoSwitch(...);");
-    switchDevice = new ArduinoSwitch(HOSTNAME, 0, "Arduino Alpaca Switch based on ESP8266", server, 8);
+    switchDevice = new ArduinoSwitch(HOSTNAME, 0, "Arduino Alpaca Switch based on ESP8266", server, 9);
     LOG_INFO("Done switchDevice = new ArduinoSwitch(...);");
 
 

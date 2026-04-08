@@ -10,9 +10,9 @@
 
 /**
  * @file DewHeater.h
- * @brief Helper class for dew heater control using a DHT11 and DS18B20 sensor.
+ * @brief Helper class for dew heater control using a DHT22/AM2302 and DS18B20 sensor.
  *
- * This class reads ambient temperature and relative humidity from a DHT11
+ * This class reads ambient temperature and relative humidity from a DHT22/AM2302
  * sensor, reads heater temperature from a DS18B20 sensor, calculates the
  * dew point (Taupunkt) using the Magnus formula, and can regulate the heater
  * output using a PID controller over PWM.
@@ -51,7 +51,7 @@ private:
   float getActiveTargetTemperatureC() const;
 
 public:
-  DewHeater(int heater_pin = -1, int dht11_pin = -1, unsigned long interval_ms = 2000UL, int ds18b20_pin = -1);
+  DewHeater(int heater_pin = -1, int dht22_pin = -1, unsigned long interval_ms = 2000UL, int ds18b20_pin = -1);
   ~DewHeater();
 
   void begin();

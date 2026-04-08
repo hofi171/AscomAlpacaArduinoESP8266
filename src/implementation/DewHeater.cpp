@@ -2,11 +2,24 @@
 
 #include <math.h>
 
-DewHeater::DewHeater(int heater_pin, int dht11_pin, unsigned long interval_ms, int ds18b20_pin)
+namespace {
+struct DhtAmbientCacheEntry {
+  bool initialized;
+  bool valid;
+  unsigned long lastReadMs;
+  float temperatureC;
+  float humidityPercent;
+  float dewPointC;
+};
+
+DhtAmbientCacheEntry g_dhtAmbientCache[17] = {};
+}
+
+DewHeater::DewHeater(int heater_pin, int dht22_pin, unsigned long interval_ms, int ds18b20_pin)
     : heaterOutputPin(heater_pin),
-      dhtPin(dht11_pin),
+  dhtPin(dht22_pin),
       heaterTempSensorPin(ds18b20_pin),
-      dht(dht11_pin, DHT11),
+  dht(dht22_pin, DHT22),
       heaterOneWire(nullptr),
       heaterSensors(nullptr),
       heaterPowerPercent(0.0f),
@@ -62,20 +75,56 @@ bool DewHeater::update() {
   lastReadMs = now;
 
   if (dhtPin >= 0) {
-    float newHumidity = dht.readHumidity();
-    float newTemperature = dht.readTemperature();
+    bool useCachedReading = false;
+    if (dhtPin <= 16) {
+      DhtAmbientCacheEntry &cache = g_dhtAmbientCache[dhtPin];
+      if (cache.valid && cache.initialized && (now - cache.lastReadMs) < readIntervalMs) {
+        temperatureC = cache.temperatureC;
+        humidityPercent = cache.humidityPercent;
+        dewPointC = cache.dewPointC;
+        sensorValid = true;
+        useCachedReading = true;
+      }
+    }
 
-    if (isnan(newHumidity) || isnan(newTemperature) ||
-        newHumidity < 0.0f || newHumidity > 100.0f) {
-      sensorValid = false;
-      temperatureC = NAN;
-      humidityPercent = NAN;
-      dewPointC = NAN;
+    if (!useCachedReading) {
+      float newHumidity = dht.readHumidity();
+      float newTemperature = dht.readTemperature();
+
+      if (isnan(newHumidity) || isnan(newTemperature) ||
+          newHumidity < 0.0f || newHumidity > 100.0f) {
+        sensorValid = false;
+        temperatureC = NAN;
+        humidityPercent = NAN;
+        dewPointC = NAN;
+
+        if (dhtPin <= 16) {
+          DhtAmbientCacheEntry &cache = g_dhtAmbientCache[dhtPin];
+          if (cache.valid && cache.initialized) {
+            temperatureC = cache.temperatureC;
+            humidityPercent = cache.humidityPercent;
+            dewPointC = cache.dewPointC;
+            sensorValid = true;
+          }
+        }
+      } else {
+        humidityPercent = newHumidity;
+        temperatureC = newTemperature;
+        dewPointC = (float)calculateDewPointMagnus(temperatureC, humidityPercent);
+        sensorValid = !isnan(dewPointC) && !isinf(dewPointC);
+
+        if (dhtPin <= 16) {
+          DhtAmbientCacheEntry &cache = g_dhtAmbientCache[dhtPin];
+          cache.initialized = true;
+          cache.valid = sensorValid;
+          cache.lastReadMs = now;
+          cache.temperatureC = temperatureC;
+          cache.humidityPercent = humidityPercent;
+          cache.dewPointC = dewPointC;
+        }
+      }
     } else {
-      humidityPercent = newHumidity;
-      temperatureC = newTemperature;
-      dewPointC = (float)calculateDewPointMagnus(temperatureC, humidityPercent);
-      sensorValid = !isnan(dewPointC) && !isinf(dewPointC);
+      // cached values already applied
     }
   } else {
     sensorValid = false;

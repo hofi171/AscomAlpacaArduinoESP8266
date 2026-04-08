@@ -24,9 +24,10 @@ extern WiFiConfig wifiConfig;
 enum class SwitchType : uint8_t {
   Default = 0,
   DewHeater = 1,
-  DTH11Temp = 2,
-  DTH11Humidity = 3,
-  DS18B20Temp = 4
+  DHT22Temp = 2,
+  DHT22Humidity = 3,
+  DS18B20Temp = 4,
+  DHT22DewPoint = 5
 };
 
 enum class DewHeaterMode : uint8_t {
@@ -41,6 +42,7 @@ struct SwitchData {
   DewHeaterMode dewHeaterMode;
   bool canWrite;
   bool canAsync;
+  bool enabled;
   double value;
   double minValue;
   double maxValue;
@@ -64,7 +66,7 @@ struct SwitchEEPROMData {
   uint8_t outputPin;        // GPIO pin; 0xFF means -1 (not connected)
   uint8_t tempInputPin;     // Temperature input GPIO pin for dew heater; 0xFF means -1
   uint8_t heaterTempPin;    // DS18B20 heater temperature GPIO pin; 0xFF means -1
-  uint8_t flags;            // bit0=canWrite, bit1=canAsync, bit2=isPWM, bit3-5=switchType, bit6=dewHeaterMode
+  uint8_t flags;            // bit0=canWrite, bit1=canAsync, bit2=isPWM, bit3-5=switchType, bit6=dewHeaterMode, bit7=enabled
   float   value;            // Current / last value
   float   minValue;
   float   maxValue;
@@ -86,23 +88,25 @@ private:
   // EEPROM address map (bytes 0-148 are used by AplacaDevice / WiFiConfig)
   static const int      EEPROM_SW_MAGIC_ADDR = 149;
   static const int      EEPROM_SW_DATA_ADDR  = 151;
-  static const uint16_t EEPROM_SW_MAGIC_VAL  = 0xA5C8;
-  static const int      EEPROM_SW_MAX        = 8;    // max switches stored
+  static const uint16_t EEPROM_SW_MAGIC_VAL  = 0xA5C9;
+  static const int      EEPROM_SW_MAX        = 9;    // max switches stored
   static const int      EEPROM_SW_ENTRY_SIZE = sizeof(SwitchEEPROMData);
 
   bool usesDewHeaterHelper(SwitchType type) const {
     return type == SwitchType::DewHeater ||
-           type == SwitchType::DTH11Temp ||
-           type == SwitchType::DTH11Humidity ||
-           type == SwitchType::DS18B20Temp;
+           type == SwitchType::DHT22Temp ||
+           type == SwitchType::DHT22Humidity ||
+           type == SwitchType::DS18B20Temp ||
+           type == SwitchType::DHT22DewPoint;
   }
 
   int getDhtPinForSwitch(int id) const {
     if (!isValidSwitchId(id)) return -1;
     SwitchType type = switches[id].type;
     if (type == SwitchType::DewHeater ||
-        type == SwitchType::DTH11Temp ||
-        type == SwitchType::DTH11Humidity) {
+        type == SwitchType::DHT22Temp ||
+        type == SwitchType::DHT22Humidity ||
+        type == SwitchType::DHT22DewPoint) {
       return switches[id].tempInputPin;
     }
     return -1;
@@ -117,6 +121,16 @@ private:
 
   void recreateDewHeater(int id) {
     if (!isValidSwitchId(id)) return;
+
+    // DHT22 roles are tied to switch 2 sensor reader.
+    // Switch 3 (humidity) and switch 8 (dew point) consume values from switch 2.
+    if (id == 3 || id == 8) {
+      if (dewHeaters[id] != nullptr) {
+        delete dewHeaters[id];
+        dewHeaters[id] = nullptr;
+      }
+      return;
+    }
 
     if (dewHeaters[id] != nullptr) {
       delete dewHeaters[id];
@@ -147,6 +161,25 @@ private:
 
   void refreshSwitchSensorState(int id) {
     if (!isValidSwitchId(id) || !usesDewHeaterHelper(switches[id].type)) return;
+
+    // Switch 3 (humidity) and switch 8 (dew point) share switch 2 DHT22 reader
+    if ((id == 3 || id == 8) && isValidSwitchId(2) && usesDewHeaterHelper(switches[2].type)) {
+      if (dewHeaters[2] == nullptr) {
+        recreateDewHeater(2);
+      }
+      if (dewHeaters[2] != nullptr) {
+        DewHeater *sharedHeater = dewHeaters[2];
+        sharedHeater->update();
+        if (id == 3 && sharedHeater->isSensorValid()) {
+          switches[id].value = sharedHeater->getHumidityPercent();
+        }
+        if (id == 8 && sharedHeater->isSensorValid()) {
+          switches[id].value = sharedHeater->getDewPointC();
+        }
+      }
+      return;
+    }
+
     if (dewHeaters[id] == nullptr) {
       recreateDewHeater(id);
     }
@@ -166,16 +199,19 @@ private:
         } else {
           heater->setTargetAboveDewPointC((float)switches[id].dewTargetOffsetC);
         }
-        switches[id].value = heater->getHeaterPowerPercent();
+        switches[id].value = switches[id].enabled ? switches[id].maxValue : switches[id].minValue;
         break;
-      case SwitchType::DTH11Temp:
+      case SwitchType::DHT22Temp:
         if (heater->isSensorValid()) switches[id].value = heater->getTemperatureC() + switches[id].dhtTempOffsetC;
         break;
-      case SwitchType::DTH11Humidity:
+      case SwitchType::DHT22Humidity:
         if (heater->isSensorValid()) switches[id].value = heater->getHumidityPercent();
         break;
       case SwitchType::DS18B20Temp:
         if (heater->isHeaterTemperatureValid()) switches[id].value = heater->getHeaterTemperatureC();
+        break;
+      case SwitchType::DHT22DewPoint:
+        if (heater->isSensorValid()) switches[id].value = heater->getDewPointC();
         break;
       default:
         break;
@@ -229,6 +265,7 @@ private:
       switches[i].canWrite  = (d.flags & 0x01) != 0;
       switches[i].canAsync  = (d.flags & 0x02) != 0;
       switches[i].isPWM     = (d.flags & 0x04) != 0;
+      switches[i].enabled   = (d.flags & 0x80) != 0;
       uint8_t typeBits = (d.flags >> 3) & 0x07;
       if (typeBits <= (uint8_t)SwitchType::DS18B20Temp) {
         switches[i].type = (SwitchType)typeBits;
@@ -277,6 +314,7 @@ private:
     if (switches[id].isPWM)    d.flags |= 0x04;
     d.flags |= (((uint8_t)switches[id].type) & 0x07) << 3;
     if (switches[id].dewHeaterMode == DewHeaterMode::Manual) d.flags |= 0x40;
+    if (switches[id].enabled) d.flags |= 0x80;
     d.value     = (float)switches[id].value;
     d.minValue  = (float)switches[id].minValue;
     d.maxValue  = (float)switches[id].maxValue;
@@ -332,16 +370,94 @@ private:
     return -1;
   }
 
+  void enforceReservedSwitchRoles() {
+    if (maxSwitch > 2) {
+      switches[2].type = SwitchType::DHT22Temp;
+      switches[2].canWrite = false;
+      switches[2].canAsync = false;
+      switches[2].isPWM = false;
+      switches[2].outputPin = -1;
+      switches[2].heaterTempPin = -1;
+      switches[2].minValue = -40.0;
+      switches[2].maxValue = 80.0;
+      switches[2].stepValue = 0.1;
+    }
+    if (maxSwitch > 3) {
+      switches[3].type = SwitchType::DHT22Humidity;
+      switches[3].canWrite = false;
+      switches[3].canAsync = false;
+      switches[3].isPWM = false;
+      switches[3].outputPin = -1;
+      switches[3].tempInputPin = switches[2].tempInputPin;
+      switches[3].heaterTempPin = -1;
+      switches[3].minValue = 0.0;
+      switches[3].maxValue = 100.0;
+      switches[3].stepValue = 0.1;
+    }
+    if (maxSwitch > 4) {
+      switches[4].type = SwitchType::DewHeater;
+      switches[4].canWrite = true;
+      switches[4].canAsync = false;
+      switches[4].isPWM = true;
+    }
+    if (maxSwitch > 5) {
+      switches[5].type = SwitchType::DS18B20Temp;
+      switches[5].canWrite = false;
+      switches[5].canAsync = false;
+      switches[5].isPWM = false;
+      switches[5].outputPin = -1;
+      switches[5].tempInputPin = -1;
+      switches[5].heaterTempPin = switches[4].heaterTempPin;
+      switches[5].heaterTempOffsetC = switches[4].heaterTempOffsetC;
+      switches[5].minValue = -55.0;
+      switches[5].maxValue = 125.0;
+      switches[5].stepValue = 0.1;
+    }
+    if (maxSwitch > 6) {
+      switches[6].type = SwitchType::DewHeater;
+      switches[6].canWrite = true;
+      switches[6].canAsync = false;
+      switches[6].isPWM = true;
+    }
+    if (maxSwitch > 7) {
+      switches[7].type = SwitchType::DS18B20Temp;
+      switches[7].canWrite = false;
+      switches[7].canAsync = false;
+      switches[7].isPWM = false;
+      switches[7].outputPin = -1;
+      switches[7].tempInputPin = -1;
+      switches[7].heaterTempPin = switches[6].heaterTempPin;
+      switches[7].heaterTempOffsetC = switches[6].heaterTempOffsetC;
+      switches[7].minValue = -55.0;
+      switches[7].maxValue = 125.0;
+      switches[7].stepValue = 0.1;
+    }
+    if (maxSwitch > 8) {
+      switches[8].type = SwitchType::DHT22DewPoint;
+      switches[8].canWrite = false;
+      switches[8].canAsync = false;
+      switches[8].isPWM = false;
+      switches[8].outputPin = -1;
+      switches[8].heaterTempPin = -1;
+      switches[8].tempInputPin = switches[2].tempInputPin;
+      switches[8].minValue = -40.0;
+      switches[8].maxValue = 80.0;
+      switches[8].stepValue = 0.1;
+    }
+  }
+
   String getSwitchTypeHelpText(SwitchType type) const {
     switch (type) {
       case SwitchType::DewHeater:
         return "Dedicated dew heater. Configure mode, targets and sensor pins on the main setup page.";
-      case SwitchType::DTH11Temp:
-        return "Temp Input GPIO = DHT11 data pin. DHT Temperature Offset is added to ambient temperature in °C.";
-      case SwitchType::DTH11Humidity:
-        return "Temp Input GPIO = DHT11 data pin. Current Value is read-only live relative humidity in %.";
+      case SwitchType::DHT22Temp:
+        return "Temp Input GPIO = DHT22/AM2302 data pin. DHT Temperature Offset is added to ambient temperature in °C.";
+      case SwitchType::DHT22Humidity:
+        return "Temp Input GPIO = DHT22/AM2302 data pin. Current Value is read-only live relative humidity in %.";
       case SwitchType::DS18B20Temp:
         return "Heater Temp GPIO = DS18B20 data pin. Current Value is read-only live temperature in °C.";
+      case SwitchType::DHT22DewPoint:
+        return "Temp Input GPIO = DHT22/AM2302 data pin. Current Value is read-only calculated dew point in °C.";
       case SwitchType::Default:
       default:
         return "GPIO Pin controls the output. Current Value is the switch value. Sensor GPIO fields are optional and unused in default mode.";
@@ -373,14 +489,19 @@ private:
       }
       if (dewHeaters[id] != nullptr) {
         DewHeater *heater = dewHeaters[id];
-        if (!heater->isPidEnabled()) {
-          heater->enablePidControl(true);
-        }
-        heater->setHeaterTemperatureOffsetC((float)sw.heaterTempOffsetC);
-        if (sw.dewHeaterMode == DewHeaterMode::Manual) {
-          heater->setTargetHeaterTemperatureC((float)sw.dewTargetManualC);
+        if (!sw.enabled) {
+          heater->enablePidControl(false);
+          heater->setHeaterPowerPercent(0.0f);
         } else {
-          heater->setTargetAboveDewPointC((float)sw.dewTargetOffsetC);
+          if (!heater->isPidEnabled()) {
+            heater->enablePidControl(true);
+          }
+          heater->setHeaterTemperatureOffsetC((float)sw.heaterTempOffsetC);
+          if (sw.dewHeaterMode == DewHeaterMode::Manual) {
+            heater->setTargetHeaterTemperatureC((float)sw.dewTargetManualC);
+          } else {
+            heater->setTargetAboveDewPointC((float)sw.dewTargetOffsetC);
+          }
         }
       }
       return;
@@ -412,7 +533,7 @@ public:
    * @param num_switches Number of switches to manage (default: 8)
    */
   ArduinoSwitch(String devicename, int devicenumber, String description, 
-           AsyncWebServer &server, int num_switches = 8)
+           AsyncWebServer &server, int num_switches = 9)
     : AlpacaDeviceSwitch(devicename, devicenumber, description, server),
       maxSwitch(num_switches),
       pendingRecreateMask(0),
@@ -424,12 +545,13 @@ public:
     
     // Initialize switches with default values
     for (int i = 0; i < maxSwitch; i++) {
-      switches[i].name = "Switch " + std::to_string(i);
-      switches[i].description = "Switch device " + std::to_string(i);
+      switches[i].name = "Custom Switch" + std::to_string(i);
+      switches[i].description = "Custom Switch device" + std::to_string(i);
       switches[i].type = SwitchType::Default;
       switches[i].dewHeaterMode = DewHeaterMode::Automatic;
       switches[i].canWrite = true;
       switches[i].canAsync = false;  // Set to true for ISwitchV3+ async support
+      switches[i].enabled = false;
       switches[i].value = 0.0;
       switches[i].minValue = 0.0;
       switches[i].maxValue = 1.0;
@@ -451,9 +573,10 @@ public:
     if (maxSwitch > 2) {
       switches[2].name = "Ambient Temp.";
       switches[2].description = "Ambient Temperature";
-      switches[2].type = SwitchType::DTH11Temp;
+      switches[2].type = SwitchType::DHT22Temp;
       switches[2].canWrite = false;
       switches[2].canAsync = false;
+      switches[2].enabled = true;
       switches[2].isPWM = false;
       switches[2].outputPin = -1;
       switches[2].tempInputPin = 13;
@@ -467,9 +590,10 @@ public:
     if (maxSwitch > 3) {
       switches[3].name = "Ambient Humid.";
       switches[3].description = "Ambient Humidity";
-      switches[3].type = SwitchType::DTH11Humidity;
+      switches[3].type = SwitchType::DHT22Humidity;
       switches[3].canWrite = false;
       switches[3].canAsync = false;
+      switches[3].enabled = true;
       switches[3].isPWM = false;
       switches[3].outputPin = -1;
       switches[3].tempInputPin = 13;
@@ -487,6 +611,7 @@ public:
       switches[4].dewHeaterMode = DewHeaterMode::Automatic;
       switches[4].canWrite = true;
       switches[4].canAsync = false;
+      switches[4].enabled = false;
       switches[4].isPWM = true;
       switches[4].dewTargetOffsetC = 5.0;
       switches[4].dewTargetManualC = 30.0;
@@ -502,6 +627,7 @@ public:
       switches[5].type = SwitchType::DS18B20Temp;
       switches[5].canWrite = false;
       switches[5].canAsync = false;
+      switches[5].enabled = true;
       switches[5].isPWM = false;
       switches[5].outputPin = -1;
       switches[5].tempInputPin = -1;
@@ -519,6 +645,7 @@ public:
       switches[6].dewHeaterMode = DewHeaterMode::Automatic;
       switches[6].canWrite = true;
       switches[6].canAsync = false;
+      switches[6].enabled = false;
       switches[6].isPWM = true;
       switches[6].dewTargetOffsetC = 5.0;
       switches[6].dewTargetManualC = 30.0;
@@ -534,6 +661,7 @@ public:
       switches[7].type = SwitchType::DS18B20Temp;
       switches[7].canWrite = false;
       switches[7].canAsync = false;
+      switches[7].enabled = true;
       switches[7].isPWM = false;
       switches[7].outputPin = -1;
       switches[7].tempInputPin = -1;
@@ -542,11 +670,32 @@ public:
       switches[7].maxValue = 125.0;
       switches[7].stepValue = 0.1;
     }
+
+    // Additional dew point switch on switch 8
+    if (maxSwitch > 8) {
+      switches[8].name = "Ambient DewPt";
+      switches[8].description = "Calculated Dew Point";
+      switches[8].type = SwitchType::DHT22DewPoint;
+      switches[8].canWrite = false;
+      switches[8].canAsync = false;
+      switches[8].enabled = true;
+      switches[8].isPWM = false;
+      switches[8].outputPin = -1;
+      switches[8].tempInputPin = 13;
+      switches[8].heaterTempPin = -1;
+      switches[8].minValue = -40.0;
+      switches[8].maxValue = 80.0;
+      switches[8].stepValue = 0.1;
+    }
     
     LOG_DEBUG("ArduinoSwitch created with " + String(maxSwitch) + " switches");
 
     // Load persisted configuration from EEPROM (overwrites defaults where saved)
     loadFromEEPROM();
+    enforceReservedSwitchRoles();
+    for (int i = 2; i <= 8 && i < maxSwitch; i++) {
+      scheduleRecreateDewHeater(i);
+    }
   }
   
   virtual ~ArduinoSwitch() {
@@ -584,6 +733,7 @@ public:
     switches[id].type = SwitchType::Default;
     switches[id].dewHeaterMode = DewHeaterMode::Automatic;
     switches[id].canWrite = canWrite;
+    switches[id].enabled = false;
     switches[id].minValue = minValue;
     switches[id].maxValue = maxValue;
     switches[id].stepValue = stepValue;
@@ -647,8 +797,8 @@ public:
    */
   bool GetSwitch(int switchNumber) override {
     if (!isValidSwitchId(switchNumber)) return false;
-    if (switches[switchNumber].type == SwitchType::DewHeater && dewHeaters[switchNumber] != nullptr) {
-      return dewHeaters[switchNumber]->getHeaterPowerPercent() > 0.0f;
+    if (switches[switchNumber].type == SwitchType::DewHeater) {
+      return switches[switchNumber].enabled;
     }
     return (switches[switchNumber].value > 0.0);
   }
@@ -680,8 +830,8 @@ public:
    */
   double GetSwitchValue(int switchNumber) override {
     if (!isValidSwitchId(switchNumber)) return 0.0;
-    if (switches[switchNumber].type == SwitchType::DewHeater && dewHeaters[switchNumber] != nullptr) {
-      return dewHeaters[switchNumber]->getHeaterPowerPercent();
+    if (switches[switchNumber].type == SwitchType::DewHeater) {
+      return switches[switchNumber].value;
     }
     return switches[switchNumber].value;
   }
@@ -739,6 +889,7 @@ public:
     }
     
     switches[switchNumber].stateChangeComplete = false;
+    switches[switchNumber].enabled = state;
     switches[switchNumber].value = state ? switches[switchNumber].maxValue : switches[switchNumber].minValue;
     applyOutput(switchNumber);
     
@@ -765,6 +916,9 @@ public:
     if (value > switches[switchNumber].maxValue) value = switches[switchNumber].maxValue;
     
     switches[switchNumber].stateChangeComplete = false;
+    if (switches[switchNumber].type == SwitchType::DewHeater) {
+      switches[switchNumber].enabled = value > switches[switchNumber].minValue;
+    }
     switches[switchNumber].value = value;
     applyOutput(switchNumber);
     
@@ -786,6 +940,7 @@ public:
       return;
     }
     
+    switches[switchNumber].enabled = state;
     switches[switchNumber].value = state ? switches[switchNumber].maxValue : switches[switchNumber].minValue;
     applyOutput(switchNumber);
     
@@ -816,6 +971,7 @@ public:
     }
 
     if (switches[switchNumber].type == SwitchType::DewHeater) {
+      switches[switchNumber].enabled = value > switches[switchNumber].minValue;
       if (switches[switchNumber].dewHeaterMode == DewHeaterMode::Manual) {
         switches[switchNumber].dewTargetManualC = value;
       } else {
@@ -844,8 +1000,8 @@ public:
    */
   double getSwitchValue(int switchNumber) {
     if (!isValidSwitchId(switchNumber)) return 0.0;
-    if (switches[switchNumber].type == SwitchType::DewHeater && dewHeaters[switchNumber] != nullptr) {
-      return dewHeaters[switchNumber]->getHeaterPowerPercent();
+    if (switches[switchNumber].type == SwitchType::DewHeater) {
+      return switches[switchNumber].value;
     }
     return switches[switchNumber].value;
   }
@@ -857,10 +1013,14 @@ public:
    */
   bool getSwitchState(int switchNumber) {
     if (!isValidSwitchId(switchNumber)) return false;
+    if (switches[switchNumber].type == SwitchType::DewHeater) {
+      return switches[switchNumber].enabled;
+    }
     return (switches[switchNumber].value > 0.0);
   }
 
   void update() {
+    enforceReservedSwitchRoles();
     processDeferredMaintenance();
     for (int i = 0; i < maxSwitch; i++) {
       refreshSwitchSensorState(i);
@@ -915,6 +1075,7 @@ public:
    * Covers all SwitchData fields; persists to EEPROM on save.
    */
   void setupHandler(AsyncWebServerRequest *request) override {
+    enforceReservedSwitchRoles();
     LOG_INFO("Received switch setup request - Method: " + String(request->method() == HTTP_POST ? "POST" : "GET"));
 
     String setupUrl = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/setup";
@@ -1019,36 +1180,47 @@ public:
         return;
       }
 
-      // --- Dedicated DTH sensor configuration page (switches 2-3) ---
-      if (request->hasParam("dth_page", true)) {
+      // --- Dedicated DHT22 sensor configuration page (switches 2-3) ---
+      if (request->hasParam("dht22_page", true) || request->hasParam("dth_page", true)) {
         bool anyDthPayload = false;
         for (int i = 2; i <= 3 && i < maxSwitch; i++) {
           bool switchHasPayload = false;
 
-          String nm = "dth_name_" + String(i);
-          if (request->hasParam(nm, true)) {
+          String nmNew = "dht22_name_" + String(i);
+          String nmOld = "dth_name_" + String(i);
+          if (request->hasParam(nmNew, true) || request->hasParam(nmOld, true)) {
             anyDthPayload = true;
             switchHasPayload = true;
-            String v = request->getParam(nm, true)->value(); v.trim();
+            String v = request->hasParam(nmNew, true)
+                        ? request->getParam(nmNew, true)->value()
+                        : request->getParam(nmOld, true)->value();
+            v.trim();
             if (v.length() > 0) switches[i].name = v.c_str();
           }
 
-          String ds = "dth_desc_" + String(i);
-          if (request->hasParam(ds, true)) {
+          String dsNew = "dht22_desc_" + String(i);
+          String dsOld = "dth_desc_" + String(i);
+          if (request->hasParam(dsNew, true) || request->hasParam(dsOld, true)) {
             anyDthPayload = true;
             switchHasPayload = true;
-            String v = request->getParam(ds, true)->value(); v.trim();
+            String v = request->hasParam(dsNew, true)
+                        ? request->getParam(dsNew, true)->value()
+                        : request->getParam(dsOld, true)->value();
+            v.trim();
             switches[i].description = v.c_str();
           }
 
           // Fixed role mapping: switch 2 = temperature, switch 3 = humidity
-          switches[i].type = (i == 2) ? SwitchType::DTH11Temp : SwitchType::DTH11Humidity;
+          switches[i].type = (i == 2) ? SwitchType::DHT22Temp : SwitchType::DHT22Humidity;
 
-          String pn = "dth_pin_" + String(i);
-          if (request->hasParam(pn, true)) {
+          String pnNew = "dht22_pin_" + String(i);
+          String pnOld = "dth_pin_" + String(i);
+          if (request->hasParam(pnNew, true) || request->hasParam(pnOld, true)) {
             anyDthPayload = true;
             switchHasPayload = true;
-            int pin = request->getParam(pn, true)->value().toInt();
+            int pin = request->hasParam(pnNew, true)
+                        ? request->getParam(pnNew, true)->value().toInt()
+                        : request->getParam(pnOld, true)->value().toInt();
             if (pin < -1 || pin > 16) pin = -1;
             switches[i].tempInputPin = pin;
             if (pin >= 0) {
@@ -1056,11 +1228,14 @@ public:
             }
           }
 
-          String of = "dth_offset_" + String(i);
-          if (request->hasParam(of, true)) {
+          String ofNew = "dht22_offset_" + String(i);
+          String ofOld = "dth_offset_" + String(i);
+          if (request->hasParam(ofNew, true) || request->hasParam(ofOld, true)) {
             anyDthPayload = true;
             switchHasPayload = true;
-            switches[i].dhtTempOffsetC = request->getParam(of, true)->value().toDouble();
+            switches[i].dhtTempOffsetC = request->hasParam(ofNew, true)
+                                          ? request->getParam(ofNew, true)->value().toDouble()
+                                          : request->getParam(ofOld, true)->value().toDouble();
           }
 
           if (switchHasPayload) {
@@ -1069,7 +1244,7 @@ public:
             switches[i].isPWM = false;
             switches[i].outputPin = -1;
             switches[i].heaterTempPin = -1;
-            if (switches[i].type == SwitchType::DTH11Humidity) {
+            if (switches[i].type == SwitchType::DHT22Humidity) {
               switches[i].minValue = 0.0;
               switches[i].maxValue = 100.0;
             } else {
@@ -1081,7 +1256,7 @@ public:
           }
         }
 
-        String message = anyDthPayload ? "DTH sensor settings saved to EEPROM." : "No DTH sensor changes detected.";
+        String message = anyDthPayload ? "DHT22 sensor settings saved to EEPROM." : "No DHT22 sensor changes detected.";
         if (anyDthPayload) {
           scheduleSaveAllToEEPROM();
         }
@@ -1128,7 +1303,7 @@ public:
           anySwitchPayload = true;
           switchHasPayload = true;
           int typeInt = request->getParam(tp, true)->value().toInt();
-          if (typeInt < (int)SwitchType::Default || typeInt > (int)SwitchType::DS18B20Temp) {
+          if (typeInt < (int)SwitchType::Default || typeInt > (int)SwitchType::DHT22DewPoint) {
             typeInt = (int)SwitchType::Default;
           }
           // Switches 0-4 are reserved as regular switches; DewHeater is only for dedicated slots 5-7
@@ -1263,9 +1438,9 @@ public:
       html += "</style></head><body><div class='container'>";
       html += "<h1>Switch Setup &mdash; " + escapeHtml(GetDeviceName()) + "</h1>";
       html += "<div class='card'><h2>Switch Configuration Pages</h2>";
-      html += "<p>Configure regular switches on separate pages. Switches 2-3 are reserved for DTH sensors. Switches 4-7 are reserved for dew heater usage.</p>";
+      html += "<p>Configure regular switches on separate pages. Switches 2-3 are reserved for DHT22/AM2302 sensors. Switches 4-7 are reserved for dew heater usage.</p>";
       html += "<a class='btn' href='" + setupUrl + "?bank=0'>Custom Switch 0 - 1</a>";
-      html += "<a class='btn' href='" + setupUrl + "?bank=1'>DTH Sensors 2 - 3</a>";
+      html += "<a class='btn' href='" + setupUrl + "?bank=1'>DHT22 Sensors 2 - 3</a>";
       html += "</div>";
 
       html += "<div class='card'><h2>WiFi Configuration</h2>";
@@ -1295,7 +1470,7 @@ public:
         html += "<div><label>Target Temp Offset over Dew Point (°C)</label><input type='number' step='0.1' name='dh_offset_" + String(i) + "' value='" + String(switches[i].dewTargetOffsetC, 2) + "'></div>";
         html += "<div><label>Target Temp Manual (°C)</label><input type='number' step='0.1' name='dh_manual_" + String(i) + "' value='" + String(switches[i].dewTargetManualC, 2) + "'></div>";
         html += "<div><label>Output Pin</label><input type='number' min='-1' max='16' name='dh_out_" + String(i) + "' value='" + String(switches[i].outputPin) + "'></div>";
-        html += "<div><label>DTH Sensor Pin</label><input type='number' min='-1' max='16' name='dh_dht_" + String(i) + "' value='" + String(switches[i].tempInputPin) + "'></div>";
+        html += "<div><label>DHT22/AM2302 Sensor Pin</label><input type='number' min='-1' max='16' name='dh_dht_" + String(i) + "' value='" + String(switches[i].tempInputPin) + "'></div>";
         html += "<div><label>DS18B20 Sensor Pin</label><input type='number' min='-1' max='16' name='dh_ds_" + String(i) + "' value='" + String(switches[i].heaterTempPin) + "'></div>";
         html += "<div><label>DS18B20 Temperature Offset (°C)</label><input type='number' step='0.1' name='dh_dsoffset_" + String(i) + "' value='" + String(switches[i].heaterTempOffsetC, 2) + "'></div>";
         if (dewHeaters[i] != nullptr) {
@@ -1313,8 +1488,8 @@ public:
     if (bank == 1) {
       String html;
       if (!html.reserve(7000)) {
-        String minimal = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>DTH Setup</title></head><body>";
-        minimal += "<h2>DTH Setup</h2><p>Not enough memory to render full page. Please reboot device.</p>";
+        String minimal = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>DHT22 Setup</title></head><body>";
+        minimal += "<h2>DHT22 Setup</h2><p>Not enough memory to render full page. Please reboot device.</p>";
         minimal += "<p><a href='" + setupUrl + "?bank=1'>Reload</a></p></body></html>";
         request->send(200, "text/html", minimal);
         return;
@@ -1322,7 +1497,7 @@ public:
 
       html = "<!DOCTYPE html><html><head>";
       html += "<meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-      html += "<title>DTH Sensor Setup</title>";
+      html += "<title>DHT22 Sensor Setup</title>";
       html += "<style>body{font-family:Arial,sans-serif;margin:20px;background:#f0f0f0;}";
       html += ".container{max-width:720px;margin:0 auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1);}";
       html += ".card{background:#f9f9f9;padding:15px;border-radius:6px;margin-bottom:14px;}";
@@ -1331,25 +1506,36 @@ public:
       html += "input[type='submit']{margin-top:10px;background:#0066cc;color:#fff;border:none;border-radius:4px;padding:9px 16px;cursor:pointer;}";
       html += ".grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;} .full{grid-column:1/-1;} .help{font-size:.85em;color:#666;margin-top:4px;}";
       html += "</style></head><body><div class='container'>";
-      html += "<h1>DTH Sensor Setup &mdash; Switches 2-3</h1>";
-      html += "<div class='card'><p>Configure fixed DTH roles: switch 2 = temperature, switch 3 = humidity.</p></div>";
+      html += "<h1>DHT22 Sensor Setup &mdash; Switches 2-3</h1>";
+      html += "<div class='card'><p>Configure fixed DHT22/AM2302 roles: switch 2 = temperature, switch 3 = humidity.</p></div>";
       html += "<form method='POST' action='" + setupUrl + "'>";
-      html += "<input type='hidden' name='dth_page' value='1'>";
+      html += "<input type='hidden' name='dht22_page' value='1'>";
       html += "<input type='hidden' name='bank' value='1'>";
 
       for (int i = 2; i <= 3 && i < maxSwitch; i++) {
         html += "<div class='card'><h2>Switch " + String(i) + " (" + String(i == 2 ? "Temperature" : "Humidity") + ")</h2><div class='grid'>";
-        html += "<div class='full'><label>Name</label><input type='text' name='dth_name_" + String(i) + "' maxlength='15' value='" + escapeHtml(String(switches[i].name.c_str())) + "'></div>";
-        html += "<div class='full'><label>Description</label><input type='text' name='dth_desc_" + String(i) + "' maxlength='20' value='" + escapeHtml(String(switches[i].description.c_str())) + "'></div>";
+        html += "<div class='full'><label>Name</label><input type='text' name='dht22_name_" + String(i) + "' maxlength='15' value='" + escapeHtml(String(switches[i].name.c_str())) + "'></div>";
+        html += "<div class='full'><label>Description</label><input type='text' name='dht22_desc_" + String(i) + "' maxlength='20' value='" + escapeHtml(String(switches[i].description.c_str())) + "'></div>";
         html += "<div><label>Mode</label><input type='text' value='" + String(i == 2 ? "Temperature" : "Humidity") + "' readonly></div>";
-        html += "<div><label>DTH Data Pin</label><input type='number' min='-1' max='16' name='dth_pin_" + String(i) + "' value='" + String(switches[i].tempInputPin) + "'></div>";
-        html += "<div><label>Temperature Offset (°C)</label><input type='number' step='0.1' name='dth_offset_" + String(i) + "' value='" + String(switches[i].dhtTempOffsetC, 2) + "'></div>";
+        html += "<div><label>DHT22/AM2302 Data Pin</label><input type='number' min='-1' max='16' name='dht22_pin_" + String(i) + "' value='" + String(switches[i].tempInputPin) + "'></div>";
+        html += "<div><label>Temperature Offset (°C)</label><input type='number' step='0.1' name='dht22_offset_" + String(i) + "' value='" + String(switches[i].dhtTempOffsetC, 2) + "'></div>";
         html += "<div><label>Current Value</label><input type='text' value='" + String(switches[i].value, 2) + "' readonly></div>";
         html += "<div class='full help'>Temperature offset is applied only on switch 2 (temperature).</div>";
         html += "</div></div>";
       }
 
-      html += "<input type='submit' value='Save DTH Sensor Settings'>";
+      if (maxSwitch > 8) {
+        html += "<div class='card'><h2>Switch 8 (Dew Point)</h2><div class='grid'>";
+        html += "<div class='full'><label>Name</label><input type='text' value='" + escapeHtml(String(switches[8].name.c_str())) + "' readonly></div>";
+        html += "<div class='full'><label>Description</label><input type='text' value='" + escapeHtml(String(switches[8].description.c_str())) + "' readonly></div>";
+        html += "<div><label>Mode</label><input type='text' value='Calculated Dew Point' readonly></div>";
+        html += "<div><label>DHT22/AM2302 Data Pin</label><input type='number' value='" + String(switches[8].tempInputPin) + "' readonly></div>";
+        html += "<div><label>Current Value (°C)</label><input type='text' value='" + String(switches[8].value, 2) + "' readonly></div>";
+        html += "<div class='full help'>This switch is read-only and automatically calculated from ambient temperature and humidity.</div>";
+        html += "</div></div>";
+      }
+
+      html += "<input type='submit' value='Save DHT22 Sensor Settings'>";
       html += "</form>";
       html += "<p><a href='" + setupUrl + "'>Back to Main Setup</a></p>";
       html += "<p><a href='" + setupUrl + "?bank=0'>Open Custom Switch 0-1</a></p>";
@@ -1450,8 +1636,8 @@ public:
       html += "<div class='sw-full'><label>Switch Type</label>";
       html += "<select name='swtype_" + String(i) + "' style='width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;font-size:.9em;'>";
       html += "<option value='0'" + String(switches[i].type == SwitchType::Default ? " selected" : "") + ">Default</option>";
-      html += "<option value='2'" + String(switches[i].type == SwitchType::DTH11Temp ? " selected" : "") + ">DTH11 Temp</option>";
-      html += "<option value='3'" + String(switches[i].type == SwitchType::DTH11Humidity ? " selected" : "") + ">DTH11 Humidity</option>";
+      html += "<option value='2'" + String(switches[i].type == SwitchType::DHT22Temp ? " selected" : "") + ">DHT22 Temp</option>";
+      html += "<option value='3'" + String(switches[i].type == SwitchType::DHT22Humidity ? " selected" : "") + ">DHT22 Humidity</option>";
       html += "<option value='4'" + String(switches[i].type == SwitchType::DS18B20Temp ? " selected" : "") + ">DS18B20 Temp</option>";
       html += "</select></div>";
       html += "<div class='type-help' id='swtypehelp_" + String(i) + "'>" + escapeHtml(getSwitchTypeHelpText(switches[i].type)) + "</div>";
@@ -1493,13 +1679,13 @@ public:
     html += "</form></div>";
 
     html += "<p><a href='" + setupUrl + "'>Back to Main Setup</a></p>";
-    html += "<p><a href='" + setupUrl + "?bank=1'>Open DTH Sensors 2-3</a></p>";
+    html += "<p><a href='" + setupUrl + "?bank=1'>Open DHT22 Sensors 2-3</a></p>";
 
     html += "<script>";
     html += "function getSwitchTypeHelp(v){switch(String(v)){";
-    html += "case '1': return 'GPIO Pin = heater PWM output. Temp Input GPIO = DHT11 ambient sensor. Heater Temp GPIO = DS18B20 on heater. Current Value = target offset above dew point in °C.';";
-    html += "case '2': return 'Temp Input GPIO = DHT11 data pin. Current Value is read-only live ambient temperature in °C.';";
-    html += "case '3': return 'Temp Input GPIO = DHT11 data pin. Current Value is read-only live relative humidity in %.';";
+    html += "case '1': return 'GPIO Pin = heater PWM output. Temp Input GPIO = DHT22/AM2302 ambient sensor. Heater Temp GPIO = DS18B20 on heater. Current Value = target offset above dew point in °C.';";
+    html += "case '2': return 'Temp Input GPIO = DHT22/AM2302 data pin. Current Value is read-only live ambient temperature in °C.';";
+    html += "case '3': return 'Temp Input GPIO = DHT22/AM2302 data pin. Current Value is read-only live relative humidity in %.';";
     html += "case '4': return 'Heater Temp GPIO = DS18B20 data pin. Current Value is read-only live temperature in °C.';";
     html += "default: return 'GPIO Pin controls the output. Current Value is the switch value. Sensor GPIO fields are optional and unused in default mode.';";
     html += "}}";
