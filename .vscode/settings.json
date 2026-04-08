@@ -8,6 +8,10 @@
     "/^C:\\\\Users\\\\phofmann_adm\\\\\\.platformio\\\\penv\\\\Scripts\\\\platformio\\.exe run$/": {
       "approve": true,
       "matchCommandLine": true
+    },
+    "/^Rename-Item \"d:\\\\Development\\\\github\\\\AscomAlpacaArduinoESP8266\\\\src\\\\implementation\\\\MySwitch\\.h\" \"ArduinoSwitch\\.h\"$/": {
+      "approve": true,
+      "matchCommandLine": true
     }
   }
 }

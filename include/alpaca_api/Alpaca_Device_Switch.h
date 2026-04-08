@@ -52,7 +52,7 @@ public:
    */
   AlpacaDeviceSwitch(String devicename, int devicenumber, String description,
                      AsyncWebServer &server)
-      : AplacaDevice(devicename, "switch", devicenumber, server) {
+      : AplacaDevice(devicename, "switch", devicenumber, server, true) {
     Description = description;
     registerHandlers(server);
     LOG_DEBUG("AlpacaDeviceSwitch created:", devicename);

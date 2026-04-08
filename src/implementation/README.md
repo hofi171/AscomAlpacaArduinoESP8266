@@ -130,7 +130,7 @@ Controls a camera or instrument rotator with precise angle positioning.
 ### Switch
 
 **Files:**
-- `MySwitch.h` - Example Switch implementation
+- `ArduinoSwitch.h` - Example Switch implementation
 - `switch_example.ino` - Complete Arduino sketch
 
 **Description:**

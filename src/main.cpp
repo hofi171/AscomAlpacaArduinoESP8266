@@ -19,10 +19,9 @@
 #include "alpaca_api/Alpaca_Management.h"
 #include "alpaca_api/Alpaca_Discovery.h"
 #include "WiFi_Config.h"
-// #include "Alpaca_Device_Focuser.h"
-#include "implementation/ArduinoFocuser.h"
+#include "implementation/ArduinoSwitch.h"
 
-#define HOSTNAME "Arduino-Alpaca-Focuser"
+#define HOSTNAME "Arduino-Alpaca-Switch"
 
 const char *ssid;
 const char *password;
@@ -34,7 +33,7 @@ AlpacaManagement *management = new AlpacaManagement();
 AlpacaDiscovery *discovery = nullptr; // Will be initialized after WiFi connection
 WiFiConfig wifiConfig; // WiFi configuration manager
 
-ArduinoFocuser *focuser = nullptr;
+ArduinoSwitch *switchDevice = nullptr;
 
 
 const int ledPin = 2; // GPIO2 is the built-in LED on most ESP8266 boards
@@ -113,16 +112,13 @@ void setup()
     management->registerManagementHandlers(server);
     LOG_INFO("Done management->registerManagementHandlers(server);");
 
-    // focuser = new AlpacaDeviceFocuser("My Focuser", 0,"This is a test focuser device", server);
-
-   
-    LOG_INFO("Start focuser = new ArduinoFocuser(...);");
-    focuser = new ArduinoFocuser(HOSTNAME, 0, "Arduino Alpaca Focuser based on ESP8266 using a DS18B20 temperature sensor and ULN2003 stepper driver", server, 10000, 10);
-    LOG_INFO("Done focuser = new ArduinoFocuser(...);");
+    LOG_INFO("Start switchDevice = new ArduinoSwitch(...);");
+    switchDevice = new ArduinoSwitch(HOSTNAME, 0, "Arduino Alpaca Switch based on ESP8266", server, 8);
+    LOG_INFO("Done switchDevice = new ArduinoSwitch(...);");
 
 
     LOG_INFO("Start management->registerDevice(...);");
-    management->registerDevice(server, focuser->GetDeviceName(), focuser->GetDeviceType(), focuser->GetDeviceNumber(), focuser);
+    management->registerDevice(server, switchDevice->GetDeviceName(), switchDevice->GetDeviceType(), switchDevice->GetDeviceNumber(), switchDevice);
     LOG_INFO("Done management->registerDevice(...);");
   }
   catch (const std::exception &e)
@@ -166,8 +162,11 @@ void setup()
 
 void loop(void)
 {
- focuser->update(); // Update focuser state (handles movement and temperature compensation)
- 
+  if (switchDevice != nullptr)
+  {
+    switchDevice->update();
+  }
+
   // Handle Alpaca Discovery requests
   if (discovery != nullptr)
   {
