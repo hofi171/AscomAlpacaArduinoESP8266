@@ -12,6 +12,16 @@
     "/^Rename-Item \"d:\\\\Development\\\\github\\\\AscomAlpacaArduinoESP8266\\\\src\\\\implementation\\\\MySwitch\\.h\" \"ArduinoSwitch\\.h\"$/": {
       "approve": true,
       "matchCommandLine": true
-    }
+    },
+    "&": true,
+    "/^& \"C:\\\\Users\\\\phofmann_adm\\\\\\.platformio\\\\penv\\\\Scripts\\\\platformio\\.exe\" run --target upload$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^& \"C:\\\\Users\\\\phofmann_adm\\\\\\.platformio\\\\penv\\\\Scripts\\\\platformio\\.exe\" run$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "pio": true
   }
 }

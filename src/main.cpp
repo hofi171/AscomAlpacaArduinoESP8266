@@ -1,5 +1,6 @@
 // You can also set default log level by defining macro (default: INFO)
-#define DEBUGLOG_DEFAULT_LOG_LEVEL_INFO
+// Levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
+#define DEBUGLOG_DEFAULT_LOG_LEVEL_DEBUG
 #include "DebugLog.h"
 
 #include <Arduino.h>
@@ -43,7 +44,7 @@ void setup()
   LOG_INFO("Start Setup");
   pinMode(ledPin, OUTPUT);
   Serial.begin(115200);
-  EEPROM.begin(512);
+  EEPROM.begin(2048);
   
   // Load WiFi credentials from EEPROM (if available)
   String wifiSSID;
@@ -113,7 +114,7 @@ void setup()
     LOG_INFO("Done management->registerManagementHandlers(server);");
 
     LOG_INFO("Start switchDevice = new ArduinoSwitch(...);");
-    switchDevice = new ArduinoSwitch(HOSTNAME, 0, "Arduino Alpaca Switch based on ESP8266", server, 9);
+    switchDevice = new ArduinoSwitch(HOSTNAME, 0, "Arduino Alpaca Switch based on ESP8266", server, 11);
     LOG_INFO("Done switchDevice = new ArduinoSwitch(...);");
 
 

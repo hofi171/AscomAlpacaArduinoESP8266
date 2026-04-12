@@ -1,6 +1,7 @@
 #include "DewHeater.h"
 
 #include <math.h>
+#include "DebugLog.h"
 
 namespace {
 struct DhtAmbientCacheEntry {
@@ -15,10 +16,14 @@ struct DhtAmbientCacheEntry {
 DhtAmbientCacheEntry g_dhtAmbientCache[17] = {};
 }
 
-DewHeater::DewHeater(int heater_pin, int dht22_pin, unsigned long interval_ms, int ds18b20_pin)
+DewHeater::DewHeater(int heater_pin, int dht22_pin, unsigned long interval_ms, int heater_temp_pin,
+           uint8_t heater_temp_sensor_type)
     : heaterOutputPin(heater_pin),
   dhtPin(dht22_pin),
-      heaterTempSensorPin(ds18b20_pin),
+    heaterTempSensorPin(heater_temp_pin),
+    heaterTempSensorType((heater_temp_sensor_type == 1)
+                 ? HeaterTempSensorType::NTCThermistor
+                 : HeaterTempSensorType::DS18B20),
   dht(dht22_pin, DHT22),
       heaterOneWire(nullptr),
       heaterSensors(nullptr),
@@ -30,6 +35,10 @@ DewHeater::DewHeater(int heater_pin, int dht22_pin, unsigned long interval_ms, i
       heaterTemperatureOffsetC(0.0f),
       sensorValid(false),
       heaterTemperatureValid(false),
+      ntcSeriesResistorOhm(10000.0f),
+      ntcNominalResistanceOhm(10000.0f),
+      ntcNominalTemperatureC(25.0f),
+      ntcBeta(3950.0f),
       pidEnabled(false),
       targetHeaterTemperatureC(NAN),
       dewPointOffsetC(2.0f),
@@ -57,10 +66,14 @@ void DewHeater::begin() {
     dht.begin();
   }
 
-  if (heaterTempSensorPin >= 0 && heaterSensors == nullptr) {
-    heaterOneWire = new OneWire(heaterTempSensorPin);
-    heaterSensors = new DallasTemperature(heaterOneWire);
-    heaterSensors->begin();
+  if (heaterTempSensorPin >= 0) {
+    if (heaterTempSensorType == HeaterTempSensorType::DS18B20 && heaterSensors == nullptr) {
+      heaterOneWire = new OneWire(heaterTempSensorPin);
+      heaterSensors = new DallasTemperature(heaterOneWire);
+      heaterSensors->begin();
+    } else if (heaterTempSensorType == HeaterTempSensorType::NTCThermistor) {
+      pinMode(heaterTempSensorPin, INPUT);
+    }
   }
 }
 
@@ -133,7 +146,7 @@ bool DewHeater::update() {
     dewPointC = NAN;
   }
 
-  if (heaterSensors != nullptr) {
+  if (heaterTempSensorType == HeaterTempSensorType::DS18B20 && heaterSensors != nullptr) {
     heaterSensors->requestTemperatures();
     float newHeaterTemperature = heaterSensors->getTempCByIndex(0);
 
@@ -143,6 +156,16 @@ bool DewHeater::update() {
         isinf(newHeaterTemperature) ||
         newHeaterTemperature < -55.0f ||
         newHeaterTemperature > 125.0f) {
+      heaterTemperatureValid = false;
+      heaterTemperatureC = NAN;
+    } else {
+      heaterTemperatureC = newHeaterTemperature + heaterTemperatureOffsetC;
+      heaterTemperatureValid = true;
+    }
+  } else if (heaterTempSensorType == HeaterTempSensorType::NTCThermistor && heaterTempSensorPin >= 0) {
+    float newHeaterTemperature = readNtcTemperatureC();
+    if (isnan(newHeaterTemperature) || isinf(newHeaterTemperature) ||
+        newHeaterTemperature < -55.0f || newHeaterTemperature > 125.0f) {
       heaterTemperatureValid = false;
       heaterTemperatureC = NAN;
     } else {
@@ -223,6 +246,61 @@ float DewHeater::getActiveTargetTemperatureC() const {
   return NAN;
 }
 
+float DewHeater::readNtcTemperatureC() const {
+  // Wiring model:
+  // VCC -> NTC thermistor -> ADC node -> fixed resistor (ntcSeriesResistorOhm) -> GND
+  // This matches: VCC - Thermistor - A0 - 10k - GND
+  const float adcMax = 1023.0f;
+  const float seriesResistorOhm = ntcSeriesResistorOhm;
+  const float nominalResistanceOhm = ntcNominalResistanceOhm;
+  const float nominalTemperatureK = ntcNominalTemperatureC + 273.15f;
+  const float beta = ntcBeta;
+
+  if (seriesResistorOhm <= 0.0f || nominalResistanceOhm <= 0.0f || nominalTemperatureK <= 0.0f || beta <= 0.0f) {
+    return NAN;
+  }
+
+  int adc = analogRead(heaterTempSensorPin);
+
+  // Rate-limited debug log (max once every 30 s) — uses stack buffer, no heap allocation
+  static unsigned long lastNtcLogMs = 0;
+  unsigned long nowMs = millis();
+  if (nowMs - lastNtcLogMs >= 30000UL) {
+    lastNtcLogMs = nowMs;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "NTC adc=%d pin=%d R_series=%.0f R0=%.0f T0K=%.2f beta=%.0f",
+             adc, heaterTempSensorPin, seriesResistorOhm, nominalResistanceOhm, nominalTemperatureK, beta);
+    LOG_DEBUG(buf);
+  }
+
+  if (adc <= 0 || adc >= (int)adcMax) {
+    return NAN;
+  }
+
+  float resistance = seriesResistorOhm * ((adcMax / (float)adc) - 1.0f);
+  if (resistance <= 0.0f || isnan(resistance) || isinf(resistance)) {
+    return NAN;
+  }
+
+  float lnRatio = log(resistance / nominalResistanceOhm);
+  float invT = (1.0f / nominalTemperatureK) + (lnRatio / beta);
+  if (invT <= 0.0f || isnan(invT) || isinf(invT)) {
+    return NAN;
+  }
+
+  float temperatureK = 1.0f / invT;
+  float temperatureC = temperatureK - 273.15f;
+
+  // Log the result at the same rate
+  if (nowMs == lastNtcLogMs) {
+    char buf2[48];
+    snprintf(buf2, sizeof(buf2), "NTC resistance=%.1f => %.2f C", resistance, temperatureC);
+    LOG_DEBUG(buf2);
+  }
+
+  return temperatureC;
+}
+
 void DewHeater::updatePidControl(unsigned long nowMs) {
   if (!pidEnabled || !heaterTemperatureValid) {
     return;
@@ -261,6 +339,13 @@ void DewHeater::updatePidControl(unsigned long nowMs) {
   setHeaterPowerPercent(output);
 }
 
+void DewHeater::setNtcParameters(float seriesResistorOhm, float nominalResistanceOhm, float nominalTemperatureC, float beta) {
+  if (seriesResistorOhm > 0.0f) ntcSeriesResistorOhm = seriesResistorOhm;
+  if (nominalResistanceOhm > 0.0f) ntcNominalResistanceOhm = nominalResistanceOhm;
+  if (nominalTemperatureC > -80.0f && nominalTemperatureC < 200.0f) ntcNominalTemperatureC = nominalTemperatureC;
+  if (beta > 0.0f) ntcBeta = beta;
+}
+
 int DewHeater::getHeaterOutputPin() const {
   return heaterOutputPin;
 }
@@ -271,6 +356,10 @@ int DewHeater::getDhtPin() const {
 
 int DewHeater::getHeaterTempSensorPin() const {
   return heaterTempSensorPin;
+}
+
+uint8_t DewHeater::getHeaterTempSensorType() const {
+  return (heaterTempSensorType == HeaterTempSensorType::NTCThermistor) ? 1 : 0;
 }
 
 float DewHeater::getHeaterPowerPercent() const {
@@ -299,6 +388,22 @@ float DewHeater::getHeaterTemperatureOffsetC() const {
 
 float DewHeater::getTargetHeaterTemperatureC() const {
   return getActiveTargetTemperatureC();
+}
+
+float DewHeater::getNtcSeriesResistorOhm() const {
+  return ntcSeriesResistorOhm;
+}
+
+float DewHeater::getNtcNominalResistanceOhm() const {
+  return ntcNominalResistanceOhm;
+}
+
+float DewHeater::getNtcNominalTemperatureC() const {
+  return ntcNominalTemperatureC;
+}
+
+float DewHeater::getNtcBeta() const {
+  return ntcBeta;
 }
 
 bool DewHeater::isSensorValid() const {

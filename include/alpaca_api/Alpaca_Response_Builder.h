@@ -4,8 +4,8 @@
 #include <ArduinoJson.h>
 #include "DebugLog.h"
 
-void AlpacaResponseBuilder( JsonObject&, int clientTransID, int transID, int serverTransID, String methodName, int errNum , String errMsg );
-void AlpacaResponseValueBuilder( JsonObject&, int clientTransID, int transID, int serverTransID, String value, int errNum , String errMsg );
+void AlpacaResponseBuilder( JsonObject&, int clientID, int clientTransID, int serverTransID, String methodName, int errNum , String errMsg );
+void AlpacaResponseValueBuilder( JsonObject&, int clientID, int clientTransID, int serverTransID, String value, int errNum , String errMsg );
 //JSON error structures used in ASCOM REST calls
 //https://ascom-standards.org/api/?urls.primaryName=Remote%20Management%20API
 //Responses, as described below, are returned in JSON format and always include a common set of values 

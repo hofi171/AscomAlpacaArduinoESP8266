@@ -19,9 +19,15 @@
  */
 class DewHeater {
 private:
+  enum class HeaterTempSensorType : uint8_t {
+    DS18B20 = 0,
+    NTCThermistor = 1
+  };
+
   int heaterOutputPin;
   int dhtPin;
   int heaterTempSensorPin;
+  HeaterTempSensorType heaterTempSensorType;
   DHT dht;
   OneWire *heaterOneWire;
   DallasTemperature *heaterSensors;
@@ -34,6 +40,11 @@ private:
   float heaterTemperatureOffsetC;
   bool sensorValid;
   bool heaterTemperatureValid;
+
+  float ntcSeriesResistorOhm;
+  float ntcNominalResistanceOhm;
+  float ntcNominalTemperatureC;
+  float ntcBeta;
 
   bool pidEnabled;
   float targetHeaterTemperatureC;
@@ -49,9 +60,11 @@ private:
 
   void updatePidControl(unsigned long nowMs);
   float getActiveTargetTemperatureC() const;
+  float readNtcTemperatureC() const;
 
 public:
-  DewHeater(int heater_pin = -1, int dht22_pin = -1, unsigned long interval_ms = 2000UL, int ds18b20_pin = -1);
+  DewHeater(int heater_pin = -1, int dht22_pin = -1, unsigned long interval_ms = 2000UL, int heater_temp_pin = -1,
+            uint8_t heater_temp_sensor_type = 0);
   ~DewHeater();
 
   void begin();
@@ -65,10 +78,12 @@ public:
   void setTargetHeaterTemperatureC(float targetC);
   void setTargetAboveDewPointC(float offsetC);
   void setHeaterTemperatureOffsetC(float offsetC);
+  void setNtcParameters(float seriesResistorOhm, float nominalResistanceOhm, float nominalTemperatureC, float beta);
 
   int getHeaterOutputPin() const;
   int getDhtPin() const;
   int getHeaterTempSensorPin() const;
+  uint8_t getHeaterTempSensorType() const;
   float getHeaterPowerPercent() const;
   float getTemperatureC() const;
   float getHumidityPercent() const;
@@ -76,6 +91,10 @@ public:
   float getHeaterTemperatureC() const;
   float getHeaterTemperatureOffsetC() const;
   float getTargetHeaterTemperatureC() const;
+  float getNtcSeriesResistorOhm() const;
+  float getNtcNominalResistanceOhm() const;
+  float getNtcNominalTemperatureC() const;
+  float getNtcBeta() const;
   bool isSensorValid() const;
   bool isHeaterTemperatureValid() const;
   bool isPidEnabled() const;

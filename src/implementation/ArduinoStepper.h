@@ -66,7 +66,7 @@ public:
 
 ArduinoStepper(/* args */)
 {    
-  EEPROM.begin(512); // Initialize EEPROM with 512 bytes of storage
+  EEPROM.begin(2048); // Initialize EEPROM with enough storage for switch and WiFi config
     
     // Load position from EEPROM
     position = readFromEEPROM(EEPROM_POS_ADDRESS);

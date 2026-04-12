@@ -1362,7 +1362,7 @@ public:
     root["ServerTransactionID"] = ++serverTransID;
     root["ErrorNumber"] = static_cast<int>(AlpacaError::Success);
     root["ErrorMessage"] = "";
-    JsonArray &values = root.createNestedArray("Value");
+    root.createNestedArray("Value"); // empty array: no custom actions supported
     root.printTo(message);
     request->send(200, "application/json", message);
   }
