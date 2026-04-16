@@ -65,6 +65,8 @@ struct SwitchData {
   double ntcNominalResistanceOhm;
   double ntcNominalTemperatureC;
   double ntcBeta;
+  double ntcSupplyVoltage;       // VCC of the NTC divider (e.g. 5.0 or 3.3)
+  double ntcAdcReferenceVoltage; // ADC full-scale voltage at MCU pin (e.g. 3.2 for Wemos D1 Mini)
   int outputPin;             // GPIO pin for output (-1 if not used)
   int tempInputPin;          // Secondary GPIO input pin for dew heater temperature (-1 if not used)
   int heaterTempPin;         // DS18B20 heater temperature pin (-1 if not used)
@@ -96,6 +98,8 @@ struct SwitchEEPROMData {
   float   ntcNominalResistanceOhm;
   float   ntcNominalTemperatureC;
   float   ntcBeta;
+  float   ntcSupplyVoltage;       // VCC of the NTC divider
+  float   ntcAdcReferenceVoltage; // ADC full-scale voltage at MCU pin
 };
 
 class ArduinoSwitch : public AlpacaDeviceSwitch {
@@ -110,7 +114,7 @@ private:
   // EEPROM address map (bytes 0-148 are used by AplacaDevice / WiFiConfig)
   static const int      EEPROM_SW_MAGIC_ADDR = 149;
   static const int      EEPROM_SW_DATA_ADDR  = 151;
-  static const uint16_t EEPROM_SW_MAGIC_VAL  = 0xA5CD;
+  static const uint16_t EEPROM_SW_MAGIC_VAL  = 0xA5CF;
   static const int      EEPROM_SW_MAX        = 11;    // max switches stored
   static const int      EEPROM_SW_ENTRY_SIZE = sizeof(SwitchEEPROMData);
   static const int      EEPROM_LED_ADDR      = EEPROM_SW_DATA_ADDR + EEPROM_SW_MAX * EEPROM_SW_ENTRY_SIZE; // 1 byte: 0xAB=disabled
@@ -190,7 +194,9 @@ private:
     dewHeaters[id]->setNtcParameters((float)switches[id].ntcSeriesResistorOhm,
                      (float)switches[id].ntcNominalResistanceOhm,
                      (float)switches[id].ntcNominalTemperatureC,
-                     (float)switches[id].ntcBeta);
+                     (float)switches[id].ntcBeta,
+                     (float)switches[id].ntcSupplyVoltage,
+                     (float)switches[id].ntcAdcReferenceVoltage);
     dewHeaters[id]->begin();
     dewHeaters[id]->setHeaterTemperatureOffsetC((float)switches[id].heaterTempOffsetC);
 
@@ -393,10 +399,14 @@ private:
       switches[i].ntcNominalResistanceOhm = (double)d.ntcNominalResistanceOhm;
       switches[i].ntcNominalTemperatureC = (double)d.ntcNominalTemperatureC;
       switches[i].ntcBeta = (double)d.ntcBeta;
+      switches[i].ntcSupplyVoltage = (double)d.ntcSupplyVoltage;
+      switches[i].ntcAdcReferenceVoltage = (double)d.ntcAdcReferenceVoltage;
       if (switches[i].ntcSeriesResistorOhm <= 0.0) switches[i].ntcSeriesResistorOhm = 10000.0;
       if (switches[i].ntcNominalResistanceOhm <= 0.0) switches[i].ntcNominalResistanceOhm = 10000.0;
       if (switches[i].ntcNominalTemperatureC < -80.0 || switches[i].ntcNominalTemperatureC > 200.0) switches[i].ntcNominalTemperatureC = 25.0;
       if (switches[i].ntcBeta <= 0.0) switches[i].ntcBeta = 3950.0;
+      if (switches[i].ntcSupplyVoltage <= 0.0) switches[i].ntcSupplyVoltage = 3.3;
+      if (switches[i].ntcAdcReferenceVoltage <= 0.0) switches[i].ntcAdcReferenceVoltage = 3.3;
       if (switches[i].outputPin >= 0) {
         pinMode(switches[i].outputPin, OUTPUT);
         applyOutput(i);
@@ -456,6 +466,8 @@ private:
     d.ntcNominalResistanceOhm = (float)switches[id].ntcNominalResistanceOhm;
     d.ntcNominalTemperatureC = (float)switches[id].ntcNominalTemperatureC;
     d.ntcBeta = (float)switches[id].ntcBeta;
+    d.ntcSupplyVoltage = (float)switches[id].ntcSupplyVoltage;
+    d.ntcAdcReferenceVoltage = (float)switches[id].ntcAdcReferenceVoltage;
     EEPROM.put(EEPROM_SW_DATA_ADDR + id * EEPROM_SW_ENTRY_SIZE, d);
   }
 
@@ -536,6 +548,8 @@ private:
       switches[2].ntcNominalResistanceOhm = 10000.0;
       switches[2].ntcNominalTemperatureC = 25.0;
       switches[2].ntcBeta = 3950.0;
+      switches[2].ntcSupplyVoltage = 3.3;
+      switches[2].ntcAdcReferenceVoltage = 3.3;
       switches[2].minValue = -40.0;
       switches[2].maxValue = 80.0;
       switches[2].stepValue = 0.1;
@@ -556,6 +570,8 @@ private:
       switches[3].ntcNominalResistanceOhm = 10000.0;
       switches[3].ntcNominalTemperatureC = 25.0;
       switches[3].ntcBeta = 3950.0;
+      switches[3].ntcSupplyVoltage = 3.3;
+      switches[3].ntcAdcReferenceVoltage = 3.3;
       switches[3].minValue = 0.0;
       switches[3].maxValue = 100.0;
       switches[3].stepValue = 0.1;
@@ -598,6 +614,8 @@ private:
       switches[6].ntcNominalResistanceOhm = switches[4].ntcNominalResistanceOhm;
       switches[6].ntcNominalTemperatureC = switches[4].ntcNominalTemperatureC;
       switches[6].ntcBeta = switches[4].ntcBeta;
+      switches[6].ntcSupplyVoltage = switches[4].ntcSupplyVoltage;
+      switches[6].ntcAdcReferenceVoltage = switches[4].ntcAdcReferenceVoltage;
       switches[6].heaterTempOffsetC = switches[4].heaterTempOffsetC;
       switches[6].minValue = -55.0;
       switches[6].maxValue = 125.0;
@@ -619,6 +637,8 @@ private:
       switches[7].ntcNominalResistanceOhm = switches[5].ntcNominalResistanceOhm;
       switches[7].ntcNominalTemperatureC = switches[5].ntcNominalTemperatureC;
       switches[7].ntcBeta = switches[5].ntcBeta;
+      switches[7].ntcSupplyVoltage = switches[5].ntcSupplyVoltage;
+      switches[7].ntcAdcReferenceVoltage = switches[5].ntcAdcReferenceVoltage;
       switches[7].heaterTempOffsetC = switches[5].heaterTempOffsetC;
       switches[7].minValue = -55.0;
       switches[7].maxValue = 125.0;
@@ -640,6 +660,8 @@ private:
       switches[8].ntcNominalResistanceOhm = 10000.0;
       switches[8].ntcNominalTemperatureC = 25.0;
       switches[8].ntcBeta = 3950.0;
+      switches[8].ntcSupplyVoltage = 3.3;
+      switches[8].ntcAdcReferenceVoltage = 3.3;
       switches[8].minValue = -40.0;
       switches[8].maxValue = 80.0;
       switches[8].stepValue = 0.1;
@@ -660,6 +682,8 @@ private:
       switches[9].ntcNominalResistanceOhm = 10000.0;
       switches[9].ntcNominalTemperatureC = 25.0;
       switches[9].ntcBeta = 3950.0;
+      switches[9].ntcSupplyVoltage = 3.3;
+      switches[9].ntcAdcReferenceVoltage = 3.3;
       switches[9].minValue = 0.0;
       switches[9].maxValue = 100.0;
       switches[9].stepValue = 0.1;
@@ -680,6 +704,8 @@ private:
       switches[10].ntcNominalResistanceOhm = 10000.0;
       switches[10].ntcNominalTemperatureC = 25.0;
       switches[10].ntcBeta = 3950.0;
+      switches[10].ntcSupplyVoltage = 3.3;
+      switches[10].ntcAdcReferenceVoltage = 3.3;
       switches[10].minValue = 0.0;
       switches[10].maxValue = 100.0;
       switches[10].stepValue = 0.1;
@@ -808,6 +834,8 @@ public:
       switches[i].ntcNominalResistanceOhm = 10000.0;
       switches[i].ntcNominalTemperatureC = 25.0;
       switches[i].ntcBeta = 3950.0;
+      switches[i].ntcSupplyVoltage = 3.3;
+      switches[i].ntcAdcReferenceVoltage = 3.3;
       switches[i].outputPin = -1;
       switches[i].tempInputPin = -1;
       switches[i].heaterTempPin = -1;
@@ -867,11 +895,13 @@ public:
       switches[4].dewTargetManualC = 30.0;
       switches[4].outputPin = 5;
       switches[4].heaterTempPin = 17;
-      switches[4].heaterTempSensorType = DewHeaterTempSensorType::DS18B20;
+      switches[4].heaterTempSensorType = DewHeaterTempSensorType::NTCThermistor;
       switches[4].ntcSeriesResistorOhm = 10000.0;
       switches[4].ntcNominalResistanceOhm = 10000.0;
       switches[4].ntcNominalTemperatureC = 25.0;
-      switches[4].ntcBeta = 3950.0;
+      switches[4].ntcBeta = 3840.0;
+      switches[4].ntcSupplyVoltage = 5.0;
+      switches[4].ntcAdcReferenceVoltage = 3.03;
       switches[4].tempInputPin = 13;
     }
 
@@ -889,11 +919,13 @@ public:
       switches[5].dewTargetManualC = 30.0;
       switches[5].outputPin = 4;
       switches[5].heaterTempPin = 17;
-      switches[5].heaterTempSensorType = DewHeaterTempSensorType::DS18B20;
+      switches[5].heaterTempSensorType = DewHeaterTempSensorType::NTCThermistor;
       switches[5].ntcSeriesResistorOhm = 10000.0;
       switches[5].ntcNominalResistanceOhm = 10000.0;
       switches[5].ntcNominalTemperatureC = 25.0;
-      switches[5].ntcBeta = 3950.0;
+      switches[5].ntcBeta = 3840.0;
+      switches[5].ntcSupplyVoltage = 5.0;
+      switches[5].ntcAdcReferenceVoltage = 3.03;
       switches[5].tempInputPin = 13;
     }
 
@@ -914,6 +946,8 @@ public:
       switches[6].ntcNominalResistanceOhm = switches[4].ntcNominalResistanceOhm;
       switches[6].ntcNominalTemperatureC = switches[4].ntcNominalTemperatureC;
       switches[6].ntcBeta = switches[4].ntcBeta;
+      switches[6].ntcSupplyVoltage = switches[4].ntcSupplyVoltage;
+      switches[6].ntcAdcReferenceVoltage = switches[4].ntcAdcReferenceVoltage;
       switches[6].minValue = -55.0;
       switches[6].maxValue = 125.0;
       switches[6].stepValue = 0.1;
@@ -936,6 +970,8 @@ public:
       switches[7].ntcNominalResistanceOhm = switches[5].ntcNominalResistanceOhm;
       switches[7].ntcNominalTemperatureC = switches[5].ntcNominalTemperatureC;
       switches[7].ntcBeta = switches[5].ntcBeta;
+      switches[7].ntcSupplyVoltage = switches[5].ntcSupplyVoltage;
+      switches[7].ntcAdcReferenceVoltage = switches[5].ntcAdcReferenceVoltage;
       switches[7].minValue = -55.0;
       switches[7].maxValue = 125.0;
       switches[7].stepValue = 0.1;
@@ -958,6 +994,8 @@ public:
       switches[8].ntcNominalResistanceOhm = 10000.0;
       switches[8].ntcNominalTemperatureC = 25.0;
       switches[8].ntcBeta = 3950.0;
+      switches[8].ntcSupplyVoltage = 3.3;
+      switches[8].ntcAdcReferenceVoltage = 3.3;
       switches[8].minValue = -40.0;
       switches[8].maxValue = 80.0;
       switches[8].stepValue = 0.1;
@@ -980,6 +1018,8 @@ public:
       switches[9].ntcNominalResistanceOhm = 10000.0;
       switches[9].ntcNominalTemperatureC = 25.0;
       switches[9].ntcBeta = 3950.0;
+      switches[9].ntcSupplyVoltage = 3.3;
+      switches[9].ntcAdcReferenceVoltage = 3.3;
       switches[9].minValue = 0.0;
       switches[9].maxValue = 100.0;
       switches[9].stepValue = 0.1;
@@ -1000,6 +1040,8 @@ public:
       switches[10].ntcNominalResistanceOhm = 10000.0;
       switches[10].ntcNominalTemperatureC = 25.0;
       switches[10].ntcBeta = 3950.0;
+      switches[10].ntcSupplyVoltage = 3.3;
+      switches[10].ntcAdcReferenceVoltage = 3.3;
       switches[10].minValue = 0.0;
       switches[10].maxValue = 100.0;
       switches[10].stepValue = 0.1;

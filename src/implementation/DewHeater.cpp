@@ -39,6 +39,8 @@ DewHeater::DewHeater(int heater_pin, int dht22_pin, unsigned long interval_ms, i
       ntcNominalResistanceOhm(10000.0f),
       ntcNominalTemperatureC(25.0f),
       ntcBeta(3950.0f),
+      ntcSupplyVoltage(3.3f),
+      ntcAdcReferenceVoltage(3.3f),
       pidEnabled(false),
       targetHeaterTemperatureC(NAN),
       dewPointOffsetC(2.0f),
@@ -270,8 +272,9 @@ float DewHeater::readNtcTemperatureC() const {
   if (nowMs - lastNtcLogMs >= 30000UL) {
     lastNtcLogMs = nowMs;
     char buf[96];
-    snprintf(buf, sizeof(buf), "NTC adc=%d pin=%d R_series=%.0f R0=%.0f T0K=%.2f beta=%.0f",
-             adc, heaterTempSensorPin, seriesResistorOhm, nominalResistanceOhm, nominalTemperatureK, beta);
+    snprintf(buf, sizeof(buf), "NTC adc=%d pin=%d R_series=%.0f R0=%.0f T0K=%.2f beta=%.0f Vcc=%.2f Vref=%.2f",
+             adc, heaterTempSensorPin, seriesResistorOhm, nominalResistanceOhm, nominalTemperatureK, beta,
+             ntcSupplyVoltage, ntcAdcReferenceVoltage);
     LOG_INFO(buf);
   }
 
@@ -280,8 +283,19 @@ float DewHeater::readNtcTemperatureC() const {
     return NAN;
   }
 
-  // VCC -> R_series -> A0 -> NTC -> GND  =>  R_ntc = R_series * adc / (adcMax - adc)
-  float resistance = seriesResistorOhm * (float)adc / (adcMax - (float)adc);
+  // VCC -> R_series -> A0 -> NTC -> GND
+  // When supply VCC differs from ADC reference voltage (e.g. 5V NTC supply + 3.2V Wemos D1 Mini ADC):
+  //   R_ntc = R_series * (adc * V_ref) / (adcMax * VCC - adc * V_ref)
+  // When VCC == V_ref this correctly reduces to R_series * adc / (adcMax - adc)
+  float adcVref = ntcAdcReferenceVoltage;
+  float vcc = ntcSupplyVoltage;
+  float numerator = (float)adc * adcVref;
+  float denominator = adcMax * vcc - (float)adc * adcVref;
+  if (denominator <= 0.0f) {
+    LOG_ERROR("NTC denominator <= 0, check VCC/Vref settings");
+    return NAN;
+  }
+  float resistance = seriesResistorOhm * numerator / denominator;
   if (resistance <= 0.0f || isnan(resistance) || isinf(resistance)) {
     LOG_ERROR("Calculated invalid resistance for NTC: " + String(resistance));
     return NAN;
@@ -345,11 +359,14 @@ void DewHeater::updatePidControl(unsigned long nowMs) {
   setHeaterPowerPercent(output);
 }
 
-void DewHeater::setNtcParameters(float seriesResistorOhm, float nominalResistanceOhm, float nominalTemperatureC, float beta) {
+void DewHeater::setNtcParameters(float seriesResistorOhm, float nominalResistanceOhm, float nominalTemperatureC, float beta,
+                                  float supplyVoltage, float adcReferenceVoltage) {
   if (seriesResistorOhm > 0.0f) ntcSeriesResistorOhm = seriesResistorOhm;
   if (nominalResistanceOhm > 0.0f) ntcNominalResistanceOhm = nominalResistanceOhm;
   if (nominalTemperatureC > -80.0f && nominalTemperatureC < 200.0f) ntcNominalTemperatureC = nominalTemperatureC;
   if (beta > 0.0f) ntcBeta = beta;
+  if (supplyVoltage > 0.0f) ntcSupplyVoltage = supplyVoltage;
+  if (adcReferenceVoltage > 0.0f) ntcAdcReferenceVoltage = adcReferenceVoltage;
 }
 
 int DewHeater::getHeaterOutputPin() const {
@@ -410,6 +427,14 @@ float DewHeater::getNtcNominalTemperatureC() const {
 
 float DewHeater::getNtcBeta() const {
   return ntcBeta;
+}
+
+float DewHeater::getNtcSupplyVoltage() const {
+  return ntcSupplyVoltage;
+}
+
+float DewHeater::getNtcAdcReferenceVoltage() const {
+  return ntcAdcReferenceVoltage;
 }
 
 bool DewHeater::isSensorValid() const {
