@@ -22,6 +22,17 @@
       "approve": true,
       "matchCommandLine": true
     },
-    "pio": true
+    "pio": true,
+    "ForEach-Object": true,
+    "/^pio run 2>&1 \\| Tee-Object -Variable buildOutput; \\$buildOutput \\| Select-Object -Last 60$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "Get-Command": true,
+    "Test-Path": true,
+    "/^& \"C:\\\\Users\\\\phofmann_adm\\\\\\.platformio\\\\penv\\\\Scripts\\\\pio\\.exe\" run 2>&1 \\| Select-Object -Last 60$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }

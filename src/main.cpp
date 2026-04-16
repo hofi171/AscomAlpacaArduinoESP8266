@@ -1,6 +1,6 @@
 // You can also set default log level by defining macro (default: INFO)
 // Levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
-#define DEBUGLOG_DEFAULT_LOG_LEVEL_DEBUG
+#define DEBUG_LOG_LEVEL LOG_LEVEL_INFO
 #include "DebugLog.h"
 
 #include <Arduino.h>

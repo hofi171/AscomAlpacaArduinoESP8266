@@ -84,7 +84,8 @@ void AlpacaResponseValueBuilder( JsonObject& root, int clientID, int clientTrans
     root["ServerTransactionID"]= serverTransID;
     root["ErrorNumber"] = static_cast<int>(errNum);
     root["ErrorMessage"] = errMsg;
-    root["Value"] = value;
+    // NaN and Infinity are not valid JSON — substitute 0.0 to keep the response parseable
+    root["Value"] = (isnan(value) || isinf(value)) ? 0.0 : value;
     LOG_DEBUG("AlpacaResponseValueBuilder-Double Value - Value: " + String(value) + " ErrorNumber: " + String(static_cast<int>(errNum)) + " ErrorMessage: " + errMsg);
     LOG_DEBUG("AlpacaResponseValueBuilder-Double Value - ClientID: " + String(clientID) + " ClientTransactionID: " + String(clientTransID) + " ServerTransactionID: " + String(serverTransID));
 }

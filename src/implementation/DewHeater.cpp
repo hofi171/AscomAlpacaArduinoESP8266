@@ -248,8 +248,9 @@ float DewHeater::getActiveTargetTemperatureC() const {
 
 float DewHeater::readNtcTemperatureC() const {
   // Wiring model:
-  // VCC -> NTC thermistor -> ADC node -> fixed resistor (ntcSeriesResistorOhm) -> GND
-  // This matches: VCC - Thermistor - A0 - 10k - GND
+  // VCC -> fixed resistor (ntcSeriesResistorOhm) -> ADC node -> NTC thermistor -> GND
+  // This matches the standard Arduino NTC circuit: VCC - 10k - A0 - NTC - GND
+  // Formula: R_ntc = R_series * adc / (adcMax - adc)
   const float adcMax = 1023.0f;
   const float seriesResistorOhm = ntcSeriesResistorOhm;
   const float nominalResistanceOhm = ntcNominalResistanceOhm;
@@ -257,6 +258,7 @@ float DewHeater::readNtcTemperatureC() const {
   const float beta = ntcBeta;
 
   if (seriesResistorOhm <= 0.0f || nominalResistanceOhm <= 0.0f || nominalTemperatureK <= 0.0f || beta <= 0.0f) {
+    LOG_ERROR("Invalid NTC parameters");
     return NAN;
   }
 
@@ -270,21 +272,25 @@ float DewHeater::readNtcTemperatureC() const {
     char buf[96];
     snprintf(buf, sizeof(buf), "NTC adc=%d pin=%d R_series=%.0f R0=%.0f T0K=%.2f beta=%.0f",
              adc, heaterTempSensorPin, seriesResistorOhm, nominalResistanceOhm, nominalTemperatureK, beta);
-    LOG_DEBUG(buf);
+    LOG_INFO(buf);
   }
 
   if (adc <= 0 || adc >= (int)adcMax) {
+    LOG_ERROR("Invalid ADC reading for NTC: " + String(adc));
     return NAN;
   }
 
-  float resistance = seriesResistorOhm * ((adcMax / (float)adc) - 1.0f);
+  // VCC -> R_series -> A0 -> NTC -> GND  =>  R_ntc = R_series * adc / (adcMax - adc)
+  float resistance = seriesResistorOhm * (float)adc / (adcMax - (float)adc);
   if (resistance <= 0.0f || isnan(resistance) || isinf(resistance)) {
+    LOG_ERROR("Calculated invalid resistance for NTC: " + String(resistance));
     return NAN;
   }
 
   float lnRatio = log(resistance / nominalResistanceOhm);
   float invT = (1.0f / nominalTemperatureK) + (lnRatio / beta);
   if (invT <= 0.0f || isnan(invT) || isinf(invT)) {
+    LOG_ERROR("Calculated invalid inverse temperature for NTC: " + String(invT));
     return NAN;
   }
 
@@ -295,7 +301,7 @@ float DewHeater::readNtcTemperatureC() const {
   if (nowMs == lastNtcLogMs) {
     char buf2[48];
     snprintf(buf2, sizeof(buf2), "NTC resistance=%.1f => %.2f C", resistance, temperatureC);
-    LOG_DEBUG(buf2);
+    LOG_INFO(buf2);
   }
 
   return temperatureC;

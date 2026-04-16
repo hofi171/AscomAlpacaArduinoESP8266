@@ -1,4 +1,4 @@
-#ifndef ARDUINO_SWITCH_H
+﻿#ifndef ARDUINO_SWITCH_H
 #define ARDUINO_SWITCH_H
 
 #include "alpaca_api/Alpaca_Device_Switch.h"
@@ -67,6 +67,8 @@ struct SwitchData {
   int heaterTempPin;         // DS18B20 heater temperature pin (-1 if not used)
   bool isPWM;                // True if PWM output, false if digital
   bool stateChangeComplete;  // For async operations
+  double safetyMinTempC;     // Heater temp safety minimum (°C) — shuts off below this
+  double safetyMaxTempC;     // Heater temp safety maximum (°C) — shuts off above this
 };
 
 // Packed struct stored in EEPROM — size handled by sizeof(SwitchEEPROMData)
@@ -108,6 +110,8 @@ private:
   static const uint16_t EEPROM_SW_MAGIC_VAL  = 0xA5CD;
   static const int      EEPROM_SW_MAX        = 11;    // max switches stored
   static const int      EEPROM_SW_ENTRY_SIZE = sizeof(SwitchEEPROMData);
+  static const int      EEPROM_LED_ADDR      = EEPROM_SW_DATA_ADDR + EEPROM_SW_MAX * EEPROM_SW_ENTRY_SIZE; // 1 byte: 0xAB=disabled
+  static const int      EEPROM_DH_SAFETY_ADDR = EEPROM_LED_ADDR + 1; // 4 floats: slot1_min, slot1_max, slot2_min, slot2_max (16 bytes)
 
   bool usesDewHeaterHelper(SwitchType type) const {
     return type == SwitchType::DewHeater ||
@@ -266,14 +270,33 @@ private:
 
     switch (switches[id].type) {
       case SwitchType::DewHeater:
-        if (!heater->isPidEnabled()) {
-          heater->enablePidControl(true);
+        // Safety temperature check — shut off if heater temp is out of configured range
+        if (heater->isHeaterTemperatureValid()) {
+          float htC = heater->getHeaterTemperatureC();
+          if (switches[id].enabled &&
+              (htC < (float)switches[id].safetyMinTempC || htC > (float)switches[id].safetyMaxTempC)) {
+            LOG_WARN("DewHeater " + String(id) + " safety shutoff: T=" + String(htC) +
+                     " range=[" + String(switches[id].safetyMinTempC) + "," +
+                     String(switches[id].safetyMaxTempC) + "]");
+            switches[id].enabled = false;
+            heater->enablePidControl(false);
+            heater->setHeaterPowerPercent(0.0f);
+          }
         }
-        heater->setHeaterTemperatureOffsetC((float)switches[id].heaterTempOffsetC);
-        if (switches[id].dewHeaterMode == DewHeaterMode::Manual) {
-          heater->setTargetHeaterTemperatureC((float)switches[id].dewTargetManualC);
+        if (!switches[id].enabled) {
+          // Switch disabled (Alpaca API or safety shutoff) — ensure heater output is off
+          if (heater->isPidEnabled()) heater->enablePidControl(false);
+          heater->setHeaterPowerPercent(0.0f);
         } else {
-          heater->setTargetAboveDewPointC((float)switches[id].dewTargetOffsetC);
+          if (!heater->isPidEnabled()) {
+            heater->enablePidControl(true);
+          }
+          heater->setHeaterTemperatureOffsetC((float)switches[id].heaterTempOffsetC);
+          if (switches[id].dewHeaterMode == DewHeaterMode::Manual) {
+            heater->setTargetHeaterTemperatureC((float)switches[id].dewTargetManualC);
+          } else {
+            heater->setTargetAboveDewPointC((float)switches[id].dewTargetOffsetC);
+          }
         }
         switches[id].value = switches[id].enabled ? switches[id].maxValue : switches[id].minValue;
         break;
@@ -383,6 +406,21 @@ private:
       }
       recreateDewHeater(i);
     }
+    // LED disable flag
+    uint8_t ledFlag = 0;
+    EEPROM.get(EEPROM_LED_ADDR, ledFlag);
+    ledDisabled = (ledFlag == 0xAB);
+    if (ledDisabled) { pinMode(2, OUTPUT); digitalWrite(2, HIGH); }
+    // Safety temperature limits for dew heater slots
+    for (int slot = 1; slot <= 2; slot++) {
+      int si = getDewHeaterSwitchIndexFromSlot(slot);
+      if (!isValidSwitchId(si)) continue;
+      float sMin = 0.0f, sMax = 50.0f;
+      EEPROM.get(EEPROM_DH_SAFETY_ADDR + (slot - 1) * 2 * sizeof(float), sMin);
+      EEPROM.get(EEPROM_DH_SAFETY_ADDR + (slot - 1) * 2 * sizeof(float) + sizeof(float), sMax);
+      if (sMin > -50.0f && sMin < 200.0f) switches[si].safetyMinTempC = (double)sMin;
+      if (sMax > -50.0f && sMax < 200.0f) switches[si].safetyMaxTempC = (double)sMax;
+    }
     LOG_INFO("Switch configuration loaded from EEPROM");
   }
 
@@ -422,6 +460,17 @@ private:
     EEPROM.put(EEPROM_SW_MAGIC_ADDR, (uint16_t)EEPROM_SW_MAGIC_VAL);
     for (int i = 0; i < maxSwitch && i < EEPROM_SW_MAX; i++) {
       saveSwitchToEEPROM(i);
+    }
+    // LED disable flag
+    EEPROM.put(EEPROM_LED_ADDR, (uint8_t)(ledDisabled ? 0xAB : 0x00));
+    // Safety temperature limits for dew heater slots
+    for (int slot = 1; slot <= 2; slot++) {
+      int si = getDewHeaterSwitchIndexFromSlot(slot);
+      if (!isValidSwitchId(si)) continue;
+      float sMin = (float)switches[si].safetyMinTempC;
+      float sMax = (float)switches[si].safetyMaxTempC;
+      EEPROM.put(EEPROM_DH_SAFETY_ADDR + (slot - 1) * 2 * sizeof(float), sMin);
+      EEPROM.put(EEPROM_DH_SAFETY_ADDR + (slot - 1) * 2 * sizeof(float) + sizeof(float), sMax);
     }
     EEPROM.commit();
     LOG_INFO("Switch configuration saved to EEPROM");
@@ -514,12 +563,10 @@ private:
       switches[4].type = SwitchType::DewHeater;
       switches[4].canWrite = true;
       switches[4].canAsync = false;
-      switches[4].enabled = false;
       switches[4].minValue = 0.0;
       switches[4].maxValue = 1.0;
       switches[4].stepValue = 1.0;
       switches[4].isPWM = true;
-      switches[4].value = switches[4].minValue;
     }
     if (maxSwitch > 5) {
       switches[5].name = "Guide DewHeater";
@@ -527,12 +574,10 @@ private:
       switches[5].type = SwitchType::DewHeater;
       switches[5].canWrite = true;
       switches[5].canAsync = false;
-      switches[5].enabled = false;
       switches[5].minValue = 0.0;
       switches[5].maxValue = 1.0;
       switches[5].stepValue = 1.0;
       switches[5].isPWM = true;
-      switches[5].value = switches[5].minValue;
     }
     if (maxSwitch > 6) {
       switches[6].name = "Main DH Temp";
@@ -765,6 +810,8 @@ public:
       switches[i].heaterTempPin = -1;
       switches[i].isPWM = false;
       switches[i].stateChangeComplete = true;
+      switches[i].safetyMinTempC = 0.0;
+      switches[i].safetyMaxTempC = 50.0;
       dewHeaters[i] = nullptr;
     }
 
@@ -816,7 +863,7 @@ public:
       switches[4].dewTargetOffsetC = 5.0;
       switches[4].dewTargetManualC = 30.0;
       switches[4].outputPin = 5;
-      switches[4].heaterTempPin = 14;
+      switches[4].heaterTempPin = 17;
       switches[4].heaterTempSensorType = DewHeaterTempSensorType::DS18B20;
       switches[4].ntcSeriesResistorOhm = 10000.0;
       switches[4].ntcNominalResistanceOhm = 10000.0;
@@ -838,7 +885,7 @@ public:
       switches[5].dewTargetOffsetC = 5.0;
       switches[5].dewTargetManualC = 30.0;
       switches[5].outputPin = 4;
-      switches[5].heaterTempPin = 12;
+      switches[5].heaterTempPin = 17;
       switches[5].heaterTempSensorType = DewHeaterTempSensorType::DS18B20;
       switches[5].ntcSeriesResistorOhm = 10000.0;
       switches[5].ntcNominalResistanceOhm = 10000.0;
@@ -965,6 +1012,35 @@ public:
     }
     // Force immediate heater creation so sensors are ready before first Alpaca API call
     processDeferredMaintenance();
+
+    // Register dedicated per-slot dew heater setup endpoints so each page is small
+    String dhBase = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dewheater";
+    server.on((dhBase + "/1").c_str(), HTTP_GET,
+      [this](AsyncWebServerRequest *r){ this->dewHeaterSlotGetHandler(1, r); });
+    server.on((dhBase + "/1").c_str(), HTTP_POST,
+      [this](AsyncWebServerRequest *r){ this->dewHeaterSlotPostHandler(1, r); });
+    server.on((dhBase + "/2").c_str(), HTTP_GET,
+      [this](AsyncWebServerRequest *r){ this->dewHeaterSlotGetHandler(2, r); });
+    server.on((dhBase + "/2").c_str(), HTTP_POST,
+      [this](AsyncWebServerRequest *r){ this->dewHeaterSlotPostHandler(2, r); });
+
+    // Dedicated DHT22 sensor setup endpoint
+    String dht22Base = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dht22";
+    server.on(dht22Base.c_str(), HTTP_GET,
+      [this](AsyncWebServerRequest *r){ this->dht22GetHandler(r); });
+    server.on(dht22Base.c_str(), HTTP_POST,
+      [this](AsyncWebServerRequest *r){ this->dht22PostHandler(r); });
+
+    // Dedicated custom switch setup endpoints (switch 0 and 1)
+    String csBase = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/customswitch";
+    server.on((csBase + "/0").c_str(), HTTP_GET,
+      [this](AsyncWebServerRequest *r){ this->customSwitchGetHandler(0, r); });
+    server.on((csBase + "/0").c_str(), HTTP_POST,
+      [this](AsyncWebServerRequest *r){ this->customSwitchPostHandler(0, r); });
+    server.on((csBase + "/1").c_str(), HTTP_GET,
+      [this](AsyncWebServerRequest *r){ this->customSwitchGetHandler(1, r); });
+    server.on((csBase + "/1").c_str(), HTTP_POST,
+      [this](AsyncWebServerRequest *r){ this->customSwitchPostHandler(1, r); });
   }
   
   virtual ~ArduinoSwitch() {
@@ -1360,6 +1436,472 @@ public:
     Serial.println("===================");
   }
 
+  // ==================== Dew Heater Slot Handlers ====================
+
+  /** Dedicated GET handler for a single dew heater slot (1 or 2). */
+  void dewHeaterSlotGetHandler(int slot, AsyncWebServerRequest *request) {
+    enforceReservedSwitchRoles();
+    int i = getDewHeaterSwitchIndexFromSlot(slot);
+    int tempSwitchIdx = getDewHeaterTempSwitchIndexFromSlot(slot);
+    String setupUrl = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/setup";
+    String slotUrl  = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dewheater/" + String(slot);
+
+    if (!isValidSwitchId(i)) {
+      request->send(400, "text/plain", "Invalid dew heater slot");
+      return;
+    }
+    if (ESP.getFreeHeap() < 5000) {
+      request->send(200, "text/html",
+        "<html><body><h2>Dew Heater " + String(slot) + " Setup</h2>"
+        "<p>Low memory. <a href='" + slotUrl + "'>Reload</a></p></body></html>");
+      return;
+    }
+
+    AsyncResponseStream *response = request->beginResponseStream("text/html");
+    if (response == nullptr) { request->send(500, "text/plain", "Failed to create response"); return; }
+
+    response->print("<!DOCTYPE html><html><head>");
+    response->print("<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>");
+    response->print("<title>Dew Heater "); response->print(slot); response->print(" Setup</title>");
+    response->print("<style>body{font-family:Arial,sans-serif;margin:20px;} .card{border:1px solid #ddd;padding:12px;margin-bottom:14px;} label{display:block;margin:6px 0 2px;} input,select{width:100%;padding:6px;box-sizing:border-box;} .help{font-size:.85em;color:#666;}</style></head><body>");
+    response->print("<h1>Dew Heater "); response->print(slot); response->print(" Setup</h1>");
+    response->print("<p><a href='"); response->print(setupUrl); response->print("?bank=2'>Back to Dew Heater Overview</a> &nbsp; <a href='"); response->print(setupUrl); response->print("'>Main Setup</a></p>");
+
+    response->print("<div class='card'>");
+    response->print("<p class='help'>Switch "); response->print(i);
+    response->print(" = heater control &nbsp;|&nbsp; Switch "); response->print(tempSwitchIdx);
+    response->print(" = heater temperature</p>");
+    response->print("<form method='POST' action='"); response->print(slotUrl); response->print("'>");
+
+    response->print("<label>Name</label><input type='text' name='dh_name' maxlength='15' value='");
+    response->print(switches[i].name.c_str()); response->print("'>");
+
+    response->print("<label>Description</label><input type='text' name='dh_desc' maxlength='20' value='");
+    response->print(switches[i].description.c_str()); response->print("'>");
+
+    response->print("<label>Mode</label><select name='dh_mode'>");
+    response->print(switches[i].dewHeaterMode == DewHeaterMode::Automatic
+      ? "<option value='automatic' selected>Automatic</option><option value='manual'>Manual</option>"
+      : "<option value='automatic'>Automatic</option><option value='manual' selected>Manual</option>");
+    response->print("</select>");
+
+    { char fb[16];
+      response->print("<label>Target Temp Offset over Dew Point (&deg;C)</label><input type='number' step='0.1' name='dh_offset' value='");
+      dtostrf(switches[i].dewTargetOffsetC, 4, 2, fb); response->print(fb); response->print("'>");
+
+      response->print("<label>Target Temp Manual (&deg;C)</label><input type='number' step='0.1' name='dh_manual' value='");
+      dtostrf(switches[i].dewTargetManualC, 4, 2, fb); response->print(fb); response->print("'>");
+    }
+
+    response->print("<label>Output Pin</label><input type='number' min='-1' max='16' name='dh_out' value='");
+    response->print(switches[i].outputPin); response->print("'>");
+
+    response->print("<label>DHT22/AM2302 Sensor Pin</label><input type='number' min='-1' max='16' name='dh_dht' value='");
+    response->print(switches[i].tempInputPin); response->print("'>");
+
+    response->print("<label>Heater Temperature Sensor Type</label><select name='dh_htsens'>");
+    response->print(switches[i].heaterTempSensorType == DewHeaterTempSensorType::DS18B20
+      ? "<option value='ds18b20' selected>DS18B20</option><option value='ntc'>NTC Thermistor</option>"
+      : "<option value='ds18b20'>DS18B20</option><option value='ntc' selected>NTC Thermistor</option>");
+    response->print("</select>");
+
+    response->print("<label>Heater Temperature Sensor Pin (17 = A0/NTC)</label><input type='number' min='-1' max='17' name='dh_ds' value='");
+    response->print(switches[i].heaterTempPin); response->print("'>");
+
+    { char fb[16];
+      response->print("<label>Heater Temperature Offset (&deg;C)</label><input type='number' step='0.1' name='dh_dsoffset' value='");
+      dtostrf(switches[i].heaterTempOffsetC, 4, 2, fb); response->print(fb); response->print("'>");
+
+      response->print("<label>NTC Fixed Resistor to GND (Ohm)</label><input type='number' step='1' min='1' name='dh_ntc_series' value='");
+      dtostrf(switches[i].ntcSeriesResistorOhm, 6, 1, fb); response->print(fb); response->print("'>");
+
+      response->print("<label>NTC Nominal Resistance R0 (Ohm)</label><input type='number' step='1' min='1' name='dh_ntc_r0' value='");
+      dtostrf(switches[i].ntcNominalResistanceOhm, 6, 1, fb); response->print(fb); response->print("'>");
+
+      response->print("<label>NTC Nominal Temperature T0 (&deg;C)</label><input type='number' step='0.1' name='dh_ntc_t0' value='");
+      dtostrf(switches[i].ntcNominalTemperatureC, 4, 1, fb); response->print(fb); response->print("'>");
+
+      response->print("<label>NTC Beta</label><input type='number' step='1' min='1' name='dh_ntc_beta' value='");
+      dtostrf(switches[i].ntcBeta, 6, 1, fb); response->print(fb);
+    }
+    response->print("'><div class='help'>Wiring: VCC -&gt; fixed resistor -&gt; A0 -&gt; NTC -&gt; GND. Use pin 17 for A0. Defaults: fixed=10000, R0=10000, T0=25, Beta=3950.</div>");
+
+    { char fb[16];
+      response->print("<label>Safety Min Heater Temp (&deg;C) &mdash; shuts off below this</label><input type='number' step='0.5' name='dh_safety_min' value='");
+      dtostrf(switches[i].safetyMinTempC, 4, 1, fb); response->print(fb); response->print("'>");
+      response->print("<label>Safety Max Heater Temp (&deg;C) &mdash; shuts off above this</label><input type='number' step='0.5' name='dh_safety_max' value='");
+      dtostrf(switches[i].safetyMaxTempC, 4, 1, fb); response->print(fb); response->print("'>");
+      response->print("<div class='help'>If the heater temperature sensor reads outside [min..max], the heater is automatically disabled. Default: 0 to 50 &deg;C.</div>");
+    }
+
+    if (dewHeaters[i] != nullptr) {
+      char fb[16];
+      response->print("<label>Current Heater Temperature</label><input type='text' value='");
+      if (dewHeaters[i]->isHeaterTemperatureValid()) { dtostrf(dewHeaters[i]->getHeaterTemperatureC(), 4, 2, fb); response->print(fb); } else { response->print("n/a"); }
+      response->print("' readonly>");
+      response->print("<label>Current Dew Point</label><input type='text' value='");
+      if (dewHeaters[i]->isSensorValid()) { dtostrf(dewHeaters[i]->getDewPointC(), 4, 2, fb); response->print(fb); } else { response->print("n/a"); }
+      response->print("' readonly>");
+    }
+
+    response->print("<p><input type='submit' value='Save Dew Heater "); response->print(slot); response->print("'></p>");
+    response->print("</form></div>");
+    response->print("<p><a href='"); response->print(setupUrl); response->print("?bank=2'>Back to Dew Heater Overview</a></p>");
+    response->print("</body></html>");
+    request->send(response);
+  }
+
+  /** Dedicated POST handler for a single dew heater slot (1 or 2). */
+  void dewHeaterSlotPostHandler(int slot, AsyncWebServerRequest *request) {
+    enforceReservedSwitchRoles();
+    int i = getDewHeaterSwitchIndexFromSlot(slot);
+    int tempSwitchIdx = getDewHeaterTempSwitchIndexFromSlot(slot);
+    String slotUrl  = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dewheater/" + String(slot);
+
+    if (!isValidSwitchId(i)) {
+      request->send(400, "text/plain", "Invalid dew heater slot");
+      return;
+    }
+
+    switches[i].type = SwitchType::DewHeater;
+    switches[i].canWrite = true;
+    switches[i].canAsync = false;
+    switches[i].isPWM = true;
+
+    if (request->hasParam("dh_mode", true)) {
+      String v = request->getParam("dh_mode", true)->value();
+      switches[i].dewHeaterMode = (v == "manual") ? DewHeaterMode::Manual : DewHeaterMode::Automatic;
+    }
+    if (request->hasParam("dh_name", true)) {
+      String v = request->getParam("dh_name", true)->value(); v.trim();
+      if (v.length() > 0) switches[i].name = v.c_str();
+    }
+    if (request->hasParam("dh_desc", true)) {
+      String v = request->getParam("dh_desc", true)->value(); v.trim();
+      switches[i].description = v.c_str();
+    }
+    if (request->hasParam("dh_offset", true))
+      switches[i].dewTargetOffsetC = request->getParam("dh_offset", true)->value().toDouble();
+    if (request->hasParam("dh_manual", true))
+      switches[i].dewTargetManualC = request->getParam("dh_manual", true)->value().toDouble();
+    if (request->hasParam("dh_out", true)) {
+      int pin = request->getParam("dh_out", true)->value().toInt();
+      switches[i].outputPin = (pin >= 0 && pin <= 16) ? pin : -1;
+    }
+    if (request->hasParam("dh_dht", true)) {
+      int pin = request->getParam("dh_dht", true)->value().toInt();
+      switches[i].tempInputPin = (pin >= 0 && pin <= 16) ? pin : -1;
+    }
+    if (request->hasParam("dh_ds", true)) {
+      int pin = request->getParam("dh_ds", true)->value().toInt();
+      switches[i].heaterTempPin = (pin >= 0 && pin <= 17) ? pin : -1;  // 17 = A0 (NTC)
+    }
+    if (request->hasParam("dh_htsens", true)) {
+      String s = request->getParam("dh_htsens", true)->value(); s.toLowerCase();
+      switches[i].heaterTempSensorType = (s == "ntc") ? DewHeaterTempSensorType::NTCThermistor : DewHeaterTempSensorType::DS18B20;
+    }
+    if (request->hasParam("dh_dsoffset", true))
+      switches[i].heaterTempOffsetC = request->getParam("dh_dsoffset", true)->value().toDouble();
+    if (request->hasParam("dh_ntc_series", true)) {
+      double v = request->getParam("dh_ntc_series", true)->value().toDouble();
+      if (v > 0.0) switches[i].ntcSeriesResistorOhm = v;
+    }
+    if (request->hasParam("dh_ntc_r0", true)) {
+      double v = request->getParam("dh_ntc_r0", true)->value().toDouble();
+      if (v > 0.0) switches[i].ntcNominalResistanceOhm = v;
+    }
+    if (request->hasParam("dh_ntc_t0", true)) {
+      double v = request->getParam("dh_ntc_t0", true)->value().toDouble();
+      if (v > -80.0 && v < 200.0) switches[i].ntcNominalTemperatureC = v;
+    }
+    if (request->hasParam("dh_ntc_beta", true)) {
+      double v = request->getParam("dh_ntc_beta", true)->value().toDouble();
+      if (v > 0.0) switches[i].ntcBeta = v;
+    }
+    if (request->hasParam("dh_safety_min", true)) {
+      double v = request->getParam("dh_safety_min", true)->value().toDouble();
+      if (v > -50.0 && v < 200.0) switches[i].safetyMinTempC = v;
+    }
+    if (request->hasParam("dh_safety_max", true)) {
+      double v = request->getParam("dh_safety_max", true)->value().toDouble();
+      if (v > -50.0 && v < 200.0) switches[i].safetyMaxTempC = v;
+    }
+
+    if (isValidSwitchId(tempSwitchIdx)) {
+      switches[tempSwitchIdx].type = SwitchType::DS18B20Temp;
+      switches[tempSwitchIdx].canWrite = false;
+      switches[tempSwitchIdx].canAsync = false;
+      switches[tempSwitchIdx].isPWM = false;
+      switches[tempSwitchIdx].minValue = -55.0;
+      switches[tempSwitchIdx].maxValue = 125.0;
+      switches[tempSwitchIdx].stepValue = 0.1;
+      switches[tempSwitchIdx].outputPin = -1;
+      switches[tempSwitchIdx].tempInputPin = -1;
+      switches[tempSwitchIdx].heaterTempPin = switches[i].heaterTempPin;
+      switches[tempSwitchIdx].heaterTempSensorType = switches[i].heaterTempSensorType;
+      switches[tempSwitchIdx].heaterTempOffsetC = switches[i].heaterTempOffsetC;
+      switches[tempSwitchIdx].ntcSeriesResistorOhm = switches[i].ntcSeriesResistorOhm;
+      switches[tempSwitchIdx].ntcNominalResistanceOhm = switches[i].ntcNominalResistanceOhm;
+      switches[tempSwitchIdx].ntcNominalTemperatureC = switches[i].ntcNominalTemperatureC;
+      switches[tempSwitchIdx].ntcBeta = switches[i].ntcBeta;
+      switches[tempSwitchIdx].name = "DH" + std::to_string(slot) + " Temp";
+      switches[tempSwitchIdx].description = "Dew heater " + std::to_string(slot) + " temperature";
+      scheduleRecreateDewHeater(tempSwitchIdx);
+    }
+
+    scheduleRecreateDewHeater(i);
+    scheduleSaveAllToEEPROM();
+
+    request->redirect(slotUrl);
+  }
+
+  // ==================== DHT22 Dedicated Handlers ====================
+
+  /** GET /setup/v1/switch/{n}/dht22 — dedicated small page for ambient sensor setup. */
+  void dht22GetHandler(AsyncWebServerRequest *request) {
+    enforceReservedSwitchRoles();
+    String setupUrl = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/setup";
+    String selfUrl  = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dht22";
+
+    AsyncResponseStream *response = request->beginResponseStream("text/html");
+    if (response == nullptr) { request->send(500, "text/plain", "Failed to create response"); return; }
+
+    response->print("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>");
+    response->print("<title>DHT22 Sensor Setup</title>");
+    response->print("<style>body{font-family:Arial,sans-serif;margin:20px;} .card{border:1px solid #ddd;padding:12px;margin-bottom:14px;background:#f9f9f9;} label{display:block;margin:6px 0 2px;} input[type='text'],input[type='number']{width:100%;padding:6px;box-sizing:border-box;} input[type='submit']{background:#0066cc;color:#fff;border:none;border-radius:4px;padding:9px 16px;cursor:pointer;} .help{font-size:.85em;color:#666;}</style></head><body>");
+    response->print("<h1>DHT22 Sensor Setup &mdash; Switches 2-3</h1>");
+    response->print("<p><a href='"); response->print(setupUrl); response->print("?bank=1'>&#8592; DHT22 Overview</a> &nbsp;|&nbsp; <a href='"); response->print(setupUrl); response->print("'>Main Setup</a></p>");
+
+    response->print("<form method='POST' action='"); response->print(selfUrl); response->print("'>");
+    for (int i = 2; i <= 3 && i < maxSwitch; i++) {
+      response->print("<div class='card'><h2>Switch "); response->print(i);
+      response->print(i == 2 ? " &mdash; Temperature" : " &mdash; Humidity"); response->print("</h2>");
+      response->print("<label>Name</label><input type='text' name='dht22_name_"); response->print(i);
+      response->print("' maxlength='15' value='"); response->print(escapeHtml(String(switches[i].name.c_str()))); response->print("'>");
+      response->print("<label>Description</label><input type='text' name='dht22_desc_"); response->print(i);
+      response->print("' maxlength='20' value='"); response->print(escapeHtml(String(switches[i].description.c_str()))); response->print("'>");
+      response->print("<label>DHT22/AM2302 Data Pin</label><input type='number' min='-1' max='16' name='dht22_pin_"); response->print(i);
+      response->print("' value='"); response->print(switches[i].tempInputPin); response->print("'>");
+      if (i == 2) {
+        char fb[12];
+        response->print("<label>Temperature Offset (&deg;C)</label><input type='number' step='0.1' name='dht22_offset_2' value='");
+        dtostrf(switches[2].dhtTempOffsetC, 4, 2, fb); response->print(fb); response->print("'>");
+      }
+      { char fb[12];
+        response->print("<label>Current Value (read-only)</label><input type='text' value='");
+        dtostrf(switches[i].value, 4, 2, fb); response->print(fb); response->print("' readonly>"); }
+      response->print("</div>");
+    }
+    if (maxSwitch > 8) {
+      char fb[12];
+      response->print("<div class='card'><h2>Switch 8 &mdash; Dew Point (read-only)</h2>");
+      response->print("<div class='help'>Calculated from switches 2+3. No configuration needed.</div>");
+      response->print("<label>Current Value (&deg;C)</label><input type='text' value='");
+      dtostrf(switches[8].value, 4, 2, fb); response->print(fb); response->print("' readonly></div>");
+    }
+    response->print("<p><input type='submit' value='Save DHT22 Settings'></p></form>");
+    response->print("<p><a href='"); response->print(setupUrl); response->print("'>&#8592; Back to Main Setup</a></p>");
+    response->print("</body></html>");
+    request->send(response);
+  }
+
+  /** POST /setup/v1/switch/{n}/dht22 — save ambient sensor settings. */
+  void dht22PostHandler(AsyncWebServerRequest *request) {
+    enforceReservedSwitchRoles();
+    String selfUrl = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dht22";
+    bool anyChange = false;
+
+    for (int i = 2; i <= 3 && i < maxSwitch; i++) {
+      bool thisChange = false;
+      String si = String(i);
+      if (request->hasParam("dht22_name_" + si, true)) {
+        String v = request->getParam("dht22_name_" + si, true)->value(); v.trim();
+        if (v.length() > 0) { switches[i].name = v.c_str(); thisChange = true; }
+      }
+      if (request->hasParam("dht22_desc_" + si, true)) {
+        String v = request->getParam("dht22_desc_" + si, true)->value(); v.trim();
+        switches[i].description = v.c_str(); thisChange = true;
+      }
+      if (request->hasParam("dht22_pin_" + si, true)) {
+        int pin = request->getParam("dht22_pin_" + si, true)->value().toInt();
+        int np = (pin >= 0 && pin <= 16) ? pin : -1;
+        if (np != switches[i].tempInputPin) {
+          switches[i].tempInputPin = np;
+          if (np >= 0) pinMode(np, INPUT);
+        }
+        thisChange = true;
+      }
+      if (i == 2 && request->hasParam("dht22_offset_2", true)) {
+        switches[i].dhtTempOffsetC = request->getParam("dht22_offset_2", true)->value().toDouble();
+        thisChange = true;
+      }
+      if (thisChange) {
+        anyChange = true;
+        switches[i].type      = (i == 2) ? SwitchType::DHT22Temp : SwitchType::DHT22Humidity;
+        switches[i].canWrite  = false;
+        switches[i].canAsync  = false;
+        switches[i].isPWM     = false;
+        switches[i].outputPin = -1;
+        switches[i].heaterTempPin = -1;
+        switches[i].minValue  = (i == 2) ? -40.0 : 0.0;
+        switches[i].maxValue  = (i == 2) ?  80.0 : 100.0;
+        switches[i].stepValue = 0.1;
+        scheduleRecreateDewHeater(i);
+      }
+    }
+    if (anyChange) scheduleSaveAllToEEPROM();
+
+    String html = "<html><head><meta http-equiv='refresh' content='2;url=" + selfUrl + "'></head><body>";
+    html += "<h1>DHT22 Sensor Setup</h1><p>Settings saved. Redirecting...</p></body></html>";
+    request->send(200, "text/html", html);
+  }
+
+  // ==================== Custom Switch Dedicated Handlers ====================
+
+  /** GET /setup/v1/switch/{n}/customswitch/{idx} — single custom switch config page. */
+  void customSwitchGetHandler(int idx, AsyncWebServerRequest *request) {
+    enforceReservedSwitchRoles();
+    String setupUrl = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/setup";
+    String selfUrl  = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/customswitch/" + String(idx);
+
+    if (!isValidSwitchId(idx)) { request->send(400, "text/plain", "Invalid switch index"); return; }
+
+    AsyncResponseStream *response = request->beginResponseStream("text/html");
+    if (response == nullptr) { request->send(500, "text/plain", "Failed to create response"); return; }
+
+    bool isOn = switches[idx].value > 0.0;
+    response->print("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>");
+    response->print("<title>Custom Switch "); response->print(idx); response->print(" Setup</title>");
+    response->print("<style>body{font-family:Arial,sans-serif;margin:20px;} .card{border:1px solid #ddd;padding:12px;margin-bottom:14px;background:#f9f9f9;} label{display:block;margin:6px 0 2px;} input[type='text'],input[type='number'],select{width:100%;padding:6px;box-sizing:border-box;} .cb-row{display:flex;gap:16px;margin:8px 0;flex-wrap:wrap;} .cb-row label{display:flex;align-items:center;gap:4px;width:auto;} input[type='submit']{background:#0066cc;color:#fff;border:none;border-radius:4px;padding:9px 16px;cursor:pointer;margin-top:8px;} .on{color:#00aa00;font-weight:bold;} .off{color:#cc0000;font-weight:bold;} .help{font-size:.85em;color:#666;} .type-help{background:#eef6ff;border-left:4px solid #0066cc;padding:8px;border-radius:4px;font-size:.85em;color:#355;margin-top:4px;}</style></head><body>");
+    response->print("<h1>Custom Switch "); response->print(idx);
+    response->print(" &nbsp;<span class='"); response->print(isOn ? "on" : "off"); response->print("'>"); response->print(isOn ? "ON" : "OFF"); response->print("</span></h1>");
+    response->print("<p><a href='"); response->print(setupUrl); response->print("?bank=0'>&#8592; Custom Switch Overview</a> &nbsp;|&nbsp; <a href='"); response->print(setupUrl); response->print("'>Main Setup</a></p>");
+
+    response->print("<form method='POST' action='"); response->print(selfUrl); response->print("'>");
+    response->print("<div class='card'>");
+
+    response->print("<label>Name (max 15 chars)</label><input type='text' name='swname_"); response->print(idx);
+    response->print("' value='"); response->print(escapeHtml(String(switches[idx].name.c_str()))); response->print("' maxlength='15'>");
+
+    response->print("<label>Description (max 20 chars)</label><input type='text' name='swdesc_"); response->print(idx);
+    response->print("' value='"); response->print(escapeHtml(String(switches[idx].description.c_str()))); response->print("' maxlength='20'>");
+
+    response->print("<label>Switch Type</label><select name='swtype_"); response->print(idx); response->print("'>");
+    response->print("<option value='0'"); response->print(switches[idx].type == SwitchType::Default      ? " selected" : ""); response->print(">Default</option>");
+    response->print("<option value='2'"); response->print(switches[idx].type == SwitchType::DHT22Temp    ? " selected" : ""); response->print(">DHT22 Temp</option>");
+    response->print("<option value='3'"); response->print(switches[idx].type == SwitchType::DHT22Humidity ? " selected" : ""); response->print(">DHT22 Humidity</option>");
+    response->print("<option value='4'"); response->print(switches[idx].type == SwitchType::DS18B20Temp  ? " selected" : ""); response->print(">DS18B20 Temp</option>");
+    response->print("</select>");
+    response->print("<div class='type-help' id='typehelp'>"); response->print(getSwitchTypeHelpText(switches[idx].type)); response->print("</div>");
+
+    { char fb[16];
+      response->print("<label>Min Value</label><input type='number' step='any' name='swmin_"); response->print(idx);
+      response->print("' value='"); dtostrf(switches[idx].minValue, 6, 4, fb); response->print(fb); response->print("'>");
+      response->print("<label>Max Value</label><input type='number' step='any' name='swmax_"); response->print(idx);
+      response->print("' value='"); dtostrf(switches[idx].maxValue, 6, 4, fb); response->print(fb); response->print("'>");
+      response->print("<label>Step Size</label><input type='number' step='any' name='swstep_"); response->print(idx);
+      response->print("' value='"); dtostrf(switches[idx].stepValue, 6, 4, fb); response->print(fb); response->print("'>");
+      response->print("<label>Current Value"); if (!switches[idx].canWrite) response->print(" (read-only)"); response->print("</label>");
+      response->print("<input type='number' step='any' name='swval_"); response->print(idx);
+      response->print("' value='"); dtostrf(switches[idx].value, 6, 4, fb); response->print(fb);
+      response->print("'"); if (!switches[idx].canWrite) response->print(" readonly"); response->print(">");
+    }
+
+    response->print("<label>GPIO Output Pin (-1 = none)</label><input type='number' name='swpin_"); response->print(idx);
+    response->print("' value='"); response->print(switches[idx].outputPin); response->print("' min='-1' max='16'>");
+    response->print("<label>Temp Input GPIO (DHT22 data pin)</label><input type='number' name='swtempin_"); response->print(idx);
+    response->print("' value='"); response->print(switches[idx].tempInputPin); response->print("' min='-1' max='16'>");
+    response->print("<label>Heater Temp GPIO (DS18B20/NTC; 17=A0)</label><input type='number' name='swheatertemp_"); response->print(idx);
+    response->print("' value='"); response->print(switches[idx].heaterTempPin); response->print("' min='-1' max='17'>");
+
+    response->print("<div class='cb-row'>");
+    response->print("<label><input type='checkbox' name='swrw_");    response->print(idx); response->print("'"); response->print(switches[idx].canWrite  ? " checked" : ""); response->print("> Can Write (R/W)</label>");
+    response->print("<label><input type='checkbox' name='swasync_"); response->print(idx); response->print("'"); response->print(switches[idx].canAsync  ? " checked" : ""); response->print("> Async</label>");
+    response->print("<label><input type='checkbox' name='swpwm_");   response->print(idx); response->print("'"); response->print(switches[idx].isPWM     ? " checked" : ""); response->print("> PWM output</label>");
+    response->print("</div>");
+    response->print("</div>");
+    response->print("<p><input type='submit' value='Save Switch "); response->print(idx); response->print("'></p></form>");
+
+    response->print("<script>(function(){");
+    response->print("var sel=document.getElementsByName('swtype_"); response->print(idx); response->print("')[0];");
+    response->print("var box=document.getElementById('typehelp');");
+    response->print("var h={'1':'GPIO Pin=heater PWM. Temp Input=DHT22 ambient. Heater Temp=DS18B20. Value=offset above dew point.',");
+    response->print("'2':'Temp Input GPIO=DHT22 data. Value=read-only ambient temp.','3':'Temp Input GPIO=DHT22 data. Value=read-only humidity.',");
+    response->print("'4':'Heater Temp GPIO=DS18B20. Value=read-only temperature.'};");
+    response->print("sel.addEventListener('change',function(){box.textContent=h[this.value]||'GPIO Pin controls output. Value is the switch value.';});");
+    response->print("})();</script>");
+    response->print("<p><a href='"); response->print(setupUrl); response->print("?bank=0'>&#8592; Back to Custom Switch Overview</a></p>");
+    response->print("</body></html>");
+    request->send(response);
+  }
+
+  /** POST /setup/v1/switch/{n}/customswitch/{idx} — save single custom switch settings. */
+  void customSwitchPostHandler(int idx, AsyncWebServerRequest *request) {
+    enforceReservedSwitchRoles();
+    String selfUrl = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/customswitch/" + String(idx);
+
+    if (!isValidSwitchId(idx)) { request->send(400, "text/plain", "Invalid switch index"); return; }
+
+    String si = String(idx);
+    bool changed = false;
+    if (request->hasParam("swname_" + si, true)) {
+      String v = request->getParam("swname_" + si, true)->value(); v.trim();
+      if (v.length() > 0) { switches[idx].name = v.c_str(); changed = true; }
+    }
+    if (request->hasParam("swdesc_" + si, true)) {
+      String v = request->getParam("swdesc_" + si, true)->value(); v.trim();
+      switches[idx].description = v.c_str(); changed = true;
+    }
+    if (request->hasParam("swtype_" + si, true)) {
+      int t = request->getParam("swtype_" + si, true)->value().toInt();
+      if (t < (int)SwitchType::Default || t > (int)SwitchType::DewHeaterOutputPct) t = (int)SwitchType::Default;
+      if (t == (int)SwitchType::DewHeater) t = (int)SwitchType::Default; // DewHeater reserved for slots 4-5
+      switches[idx].type = (SwitchType)t; changed = true;
+    }
+    if (request->hasParam("swmin_"  + si, true)) { switches[idx].minValue  = request->getParam("swmin_"  + si, true)->value().toDouble(); changed = true; }
+    if (request->hasParam("swmax_"  + si, true)) { switches[idx].maxValue  = request->getParam("swmax_"  + si, true)->value().toDouble(); changed = true; }
+    if (request->hasParam("swstep_" + si, true)) { switches[idx].stepValue = request->getParam("swstep_" + si, true)->value().toDouble(); changed = true; }
+    if (request->hasParam("swval_"  + si, true)) {
+      double nv = request->getParam("swval_" + si, true)->value().toDouble();
+      if (nv < switches[idx].minValue) nv = switches[idx].minValue;
+      if (nv > switches[idx].maxValue) nv = switches[idx].maxValue;
+      switches[idx].value = nv; applyOutput(idx); changed = true;
+    }
+    if (request->hasParam("swpin_" + si, true)) {
+      int pin = request->getParam("swpin_" + si, true)->value().toInt();
+      if (pin < 0 || pin > 16) pin = -1;
+      if (pin != switches[idx].outputPin) {
+        switches[idx].outputPin = pin;
+        if (pin >= 0) { pinMode(pin, OUTPUT); applyOutput(idx); }
+      }
+      changed = true;
+    }
+    if (request->hasParam("swtempin_" + si, true)) {
+      int pin = request->getParam("swtempin_" + si, true)->value().toInt();
+      if (pin < 0 || pin > 16) pin = -1;
+      if (pin != switches[idx].tempInputPin) { switches[idx].tempInputPin = pin; if (pin >= 0) pinMode(pin, INPUT); }
+      changed = true;
+    }
+    if (request->hasParam("swheatertemp_" + si, true)) {
+      int pin = request->getParam("swheatertemp_" + si, true)->value().toInt();
+      if (pin < 0 || pin > 16) pin = -1;
+      if (pin != switches[idx].heaterTempPin) { switches[idx].heaterTempPin = pin; if (pin >= 0) pinMode(pin, INPUT); }
+      changed = true;
+    }
+    if (changed) {
+      switches[idx].canWrite = request->hasParam("swrw_"    + si, true);
+      switches[idx].canAsync = request->hasParam("swasync_" + si, true);
+      switches[idx].isPWM    = request->hasParam("swpwm_"   + si, true);
+      scheduleRecreateDewHeater(idx);
+      applyOutput(idx);
+      scheduleSaveAllToEEPROM();
+    }
+
+    String html = "<html><head><meta http-equiv='refresh' content='2;url=" + selfUrl + "'></head><body>";
+    html += "<h1>Switch " + String(idx) + " Setup</h1><p>Settings saved. Redirecting...</p></body></html>";
+    request->send(200, "text/html", html);
+  }
+
   // ==================== Setup Handler ====================
 
   /**
@@ -1381,7 +1923,7 @@ public:
         ledDisabled = request->hasParam("led_disable", true);
         pinMode(2, OUTPUT);
         digitalWrite(2, ledDisabled ? HIGH : LOW);
-
+        scheduleSaveAllToEEPROM(); // persist LED state across reboots
         String ledMessage = ledDisabled ? "LED disabled (GPIO2 set HIGH)." : "LED enabled (GPIO2 set LOW).";
         String html = "<html><head><meta http-equiv='refresh' content='2;url=" + setupUrl + "'></head><body>";
         html += "<h1>Switch Setup</h1><p>" + ledMessage + "</p><p>Redirecting back...</p></body></html>";
@@ -1409,106 +1951,13 @@ public:
         }
       }
 
-      // --- Dedicated dew heater configuration on main page ---
+      // --- Dew heater POST is now handled by dedicated /dewheater/{slot} endpoints ---
+      // Legacy dh_slot param: redirect to the appropriate dedicated endpoint
       if (request->hasParam("dh_slot", true)) {
         int slot = request->getParam("dh_slot", true)->value().toInt();
-        int i = getDewHeaterSwitchIndexFromSlot(slot);
-        int tempSwitchIdx = getDewHeaterTempSwitchIndexFromSlot(slot);
-        if (isValidSwitchId(i)) {
-          switches[i].type = SwitchType::DewHeater;
-          switches[i].canWrite = true;
-          switches[i].canAsync = false;
-          switches[i].isPWM = true;
-          switches[i].dewHeaterMode = request->hasParam("dh_mode_" + String(i), true) &&
-                                      request->getParam("dh_mode_" + String(i), true)->value() == "manual"
-                                        ? DewHeaterMode::Manual
-                                        : DewHeaterMode::Automatic;
-
-          if (request->hasParam("dh_name_" + String(i), true)) {
-            String v = request->getParam("dh_name_" + String(i), true)->value();
-            v.trim();
-            if (v.length() > 0) switches[i].name = v.c_str();
-          }
-          if (request->hasParam("dh_desc_" + String(i), true)) {
-            String v = request->getParam("dh_desc_" + String(i), true)->value();
-            v.trim();
-            switches[i].description = v.c_str();
-          }
-          if (request->hasParam("dh_offset_" + String(i), true)) {
-            switches[i].dewTargetOffsetC = request->getParam("dh_offset_" + String(i), true)->value().toDouble();
-          }
-          if (request->hasParam("dh_manual_" + String(i), true)) {
-            switches[i].dewTargetManualC = request->getParam("dh_manual_" + String(i), true)->value().toDouble();
-          }
-          if (request->hasParam("dh_out_" + String(i), true)) {
-            int pin = request->getParam("dh_out_" + String(i), true)->value().toInt();
-            switches[i].outputPin = (pin >= 0 && pin <= 16) ? pin : -1;
-          }
-          if (request->hasParam("dh_dht_" + String(i), true)) {
-            int pin = request->getParam("dh_dht_" + String(i), true)->value().toInt();
-            switches[i].tempInputPin = (pin >= 0 && pin <= 16) ? pin : -1;
-          }
-          if (request->hasParam("dh_ds_" + String(i), true)) {
-            int pin = request->getParam("dh_ds_" + String(i), true)->value().toInt();
-            switches[i].heaterTempPin = (pin >= 0 && pin <= 16) ? pin : -1;
-          }
-          if (request->hasParam("dh_htsens_" + String(i), true)) {
-            String sensorType = request->getParam("dh_htsens_" + String(i), true)->value();
-            sensorType.toLowerCase();
-            switches[i].heaterTempSensorType = (sensorType == "ntc")
-                                               ? DewHeaterTempSensorType::NTCThermistor
-                                               : DewHeaterTempSensorType::DS18B20;
-          }
-          if (request->hasParam("dh_dsoffset_" + String(i), true)) {
-            switches[i].heaterTempOffsetC = request->getParam("dh_dsoffset_" + String(i), true)->value().toDouble();
-          }
-          if (request->hasParam("dh_ntc_series_" + String(i), true)) {
-            double v = request->getParam("dh_ntc_series_" + String(i), true)->value().toDouble();
-            if (v > 0.0) switches[i].ntcSeriesResistorOhm = v;
-          }
-          if (request->hasParam("dh_ntc_r0_" + String(i), true)) {
-            double v = request->getParam("dh_ntc_r0_" + String(i), true)->value().toDouble();
-            if (v > 0.0) switches[i].ntcNominalResistanceOhm = v;
-          }
-          if (request->hasParam("dh_ntc_t0_" + String(i), true)) {
-            double v = request->getParam("dh_ntc_t0_" + String(i), true)->value().toDouble();
-            if (v > -80.0 && v < 200.0) switches[i].ntcNominalTemperatureC = v;
-          }
-          if (request->hasParam("dh_ntc_beta_" + String(i), true)) {
-            double v = request->getParam("dh_ntc_beta_" + String(i), true)->value().toDouble();
-            if (v > 0.0) switches[i].ntcBeta = v;
-          }
-
-          if (isValidSwitchId(tempSwitchIdx)) {
-            switches[tempSwitchIdx].type = SwitchType::DS18B20Temp;
-            switches[tempSwitchIdx].canWrite = false;
-            switches[tempSwitchIdx].canAsync = false;
-            switches[tempSwitchIdx].isPWM = false;
-            switches[tempSwitchIdx].minValue = -55.0;
-            switches[tempSwitchIdx].maxValue = 125.0;
-            switches[tempSwitchIdx].stepValue = 0.1;
-            switches[tempSwitchIdx].outputPin = -1;
-            switches[tempSwitchIdx].tempInputPin = -1;
-            switches[tempSwitchIdx].heaterTempPin = switches[i].heaterTempPin;
-            switches[tempSwitchIdx].heaterTempSensorType = switches[i].heaterTempSensorType;
-            switches[tempSwitchIdx].heaterTempOffsetC = switches[i].heaterTempOffsetC;
-            switches[tempSwitchIdx].ntcSeriesResistorOhm = switches[i].ntcSeriesResistorOhm;
-            switches[tempSwitchIdx].ntcNominalResistanceOhm = switches[i].ntcNominalResistanceOhm;
-            switches[tempSwitchIdx].ntcNominalTemperatureC = switches[i].ntcNominalTemperatureC;
-            switches[tempSwitchIdx].ntcBeta = switches[i].ntcBeta;
-            switches[tempSwitchIdx].name = "DH" + std::to_string(slot) + " Temp";
-            switches[tempSwitchIdx].description = "Dew heater " + std::to_string(slot) + " temperature";
-            scheduleRecreateDewHeater(tempSwitchIdx);
-          }
-
-          scheduleRecreateDewHeater(i);
-          scheduleSaveAllToEEPROM();
-          message += "Dew heater " + String(slot) + " settings saved.";
-        }
-
-        String html = "<html><head><meta http-equiv='refresh' content='2;url=" + setupUrl + "?bank=2'></head><body>";
-        html += "<h1>Switch Setup</h1><p>" + message + "</p><p>Redirecting back...</p></body></html>";
-        request->send(200, "text/html", html);
+        if (slot < 1 || slot > 2) slot = 1;
+        String redirect = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dewheater/" + String(slot);
+        request->redirect(redirect);
         return;
       }
 
@@ -1752,45 +2201,9 @@ public:
 
     // Main page (general settings + links only)
     if (bank < 0) {
-      String html;
-      if (!html.reserve(3500)) {
-        String minimal = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Switch Setup</title></head><body>";
-        minimal += "<h2>Switch Setup</h2><p>Low memory fallback page.</p>";
-        minimal += "<p><a href='" + setupUrl + "?bank=0'>Open Custom Switch 0-1</a></p>";
-        minimal += "<p><a href='" + setupUrl + "?bank=1'>Open DHT22 Sensors 2-3</a></p>";
-        minimal += "<p><a href='" + setupUrl + "?bank=2'>Open Dew Heater 1-2</a></p>";
-        minimal += "</body></html>";
-        request->send(200, "text/html", minimal);
-        return;
-      }
-      html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'><title>Switch Setup</title></head><body>";
-      html += "<h1>Switch Setup - " + escapeHtml(GetDeviceName()) + "</h1>";
-      html += "<h2>Pages</h2><p><a href='" + setupUrl + "?bank=0'>Custom Switch 0-1</a></p>";
-      html += "<p><a href='" + setupUrl + "?bank=1'>DHT22 Sensors 2-3</a></p>";
-      html += "<p><a href='" + setupUrl + "?bank=2'>Dew Heater 1-2</a></p>";
-
-      html += "<h2>WiFi</h2><form method='POST' action='" + setupUrl + "'>";
-      html += "<label>SSID</label><input type='text' name='wifi_ssid' maxlength='31' value='" + escapeHtml(String(wifiConfig.getSSID())) + "' required>";
-      html += "<label>Password</label><input type='password' name='wifi_password' maxlength='63' value='' placeholder='Leave empty to keep current'>";
-      html += "<p><input type='submit' value='Save WiFi Settings'></p></form>";
-
-      html += "<h2>LED</h2><form method='POST' action='" + setupUrl + "'>";
-      html += "<input type='hidden' name='led_page' value='1'>";
-      html += "<label><input type='checkbox' name='led_disable'" + String(ledDisabled ? " checked" : "") + "> Disable onboard LED (GPIO2 HIGH)</label>";
-      html += "<p><input type='submit' value='Save LED Setting'></p></form>";
-      html += "</body></html>";
-      request->send(200, "text/html", html);
-      return;
-    }
-
-    if (bank == 2) {
-      yield(); // let lwIP/WiFi process pending events before allocating response
-      if (ESP.getFreeHeap() < 8000) {
+      if (ESP.getFreeHeap() < 6000) {
         request->send(200, "text/html",
-          "<html><body><h2>Dew Heater Setup</h2>"
-          "<p>Not enough free memory to render this page right now.</p>"
-          "<p><a href='" + setupUrl + "?bank=2'>Reload</a> &nbsp; "
-          "<a href='" + setupUrl + "'>Main Setup</a></p></body></html>");
+          "<html><body><h2>Switch Setup</h2><p>Low memory. <a href='" + setupUrl + "'>Reload</a></p></body></html>");
         return;
       }
       AsyncResponseStream *response = request->beginResponseStream("text/html");
@@ -1798,10 +2211,58 @@ public:
         request->send(500, "text/plain", "Failed to create response");
         return;
       }
+      response->print("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'><title>Switch Setup</title></head><body>");
+      response->print("<h1>Switch Setup - ");
+      response->print(escapeHtml(GetDeviceName()));
+      response->print("</h1>");
+      response->print("<h2>Pages</h2>");
+      { String csBase = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/customswitch";
+        String dht22Url2 = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dht22";
+        String dhBase2  = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dewheater";
+        response->print("<p><a href='"); response->print(csBase); response->print("/0'>Custom Switch 0</a></p>");
+        response->print("<p><a href='"); response->print(csBase); response->print("/1'>Custom Switch 1</a></p>");
+        response->print("<p><a href='"); response->print(dht22Url2); response->print("'>DHT22 Sensors 2-3</a></p>");
+        response->print("<p><a href='"); response->print(dhBase2); response->print("/1'>Dew Heater 1</a></p>");
+        response->print("<p><a href='"); response->print(dhBase2); response->print("/2'>Dew Heater 2</a></p>"); }
+      response->print("<h2>WiFi</h2><form method='POST' action='"); response->print(setupUrl); response->print("'>");
+      response->print("<label>SSID</label><input type='text' name='wifi_ssid' maxlength='31' value='");
+      response->print(escapeHtml(String(wifiConfig.getSSID())));
+      response->print("' required>");
+      response->print("<label>Password</label><input type='password' name='wifi_password' maxlength='63' value='' placeholder='Leave empty to keep current'>");
+      response->print("<p><input type='submit' value='Save WiFi Settings'></p></form>");
+      response->print("<h2>LED</h2><form method='POST' action='"); response->print(setupUrl); response->print("'>");
+      response->print("<input type='hidden' name='led_page' value='1'>");
+      response->print(ledDisabled
+        ? "<label><input type='checkbox' name='led_disable' checked> Disable onboard LED (GPIO2 HIGH)</label>"
+        : "<label><input type='checkbox' name='led_disable'> Disable onboard LED (GPIO2 HIGH)</label>");
+      response->print("<p><input type='submit' value='Save LED Setting'></p></form>");
+      response->print("</body></html>");
+      request->send(response);
+      return;
+    }
 
-      response->print("<!DOCTYPE html><html><head>");
-      response->print("<meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>");
+    if (bank == 2) {
+      // Each dew heater now has its own dedicated small-page endpoint
+      String dh1 = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dewheater/1";
+      String dh2 = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dewheater/2";
+      AsyncResponseStream *response = request->beginResponseStream("text/html");
+      if (response == nullptr) { request->send(500, "text/plain", "Failed to create response"); return; }
+      response->print("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>");
       response->print("<title>Dew Heater Setup</title>");
+      response->print("<style>body{font-family:Arial,sans-serif;margin:20px;} a{display:block;margin:10px 0;font-size:1.1em;}</style></head><body>");
+      response->print("<h1>Dew Heater Setup</h1>");
+      response->print("<p><a href='"); response->print(dh1); response->print("'>&#9654; Dew Heater 1 (Switch 4+6)</a>");
+      response->print("<a href='"); response->print(dh2); response->print("'>&#9654; Dew Heater 2 (Switch 5+7)</a>");
+      response->print("<a href='"); response->print(setupUrl); response->print("'>&#8592; Back to Main Setup</a></p>");
+      response->print("</body></html>");
+      request->send(response);
+      return;
+      // (dead code removed - old per-slot forms now handled by /dewheater/{slot} endpoints)
+      #if 0
+      AsyncResponseStream *_dh_unused = request->beginResponseStream("text/html");
+      _dh_unused->print("<!DOCTYPE html><html><head>");
+      _dh_unused->print("<meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>");
+      _dh_unused->print("<title>Dew Heater Setup</title>");
       response->print("<style>body{font-family:Arial,sans-serif;margin:20px;} .card{border:1px solid #ddd;padding:12px;margin-bottom:14px;} label{display:block;margin:6px 0 2px;} input,select{width:100%;padding:6px;box-sizing:border-box;} .help{font-size:.85em;color:#666;}</style></head><body>");
       response->print("<h1>Dew Heater Setup &mdash; Switches 4-7</h1>");
 
@@ -1876,7 +2337,7 @@ public:
         response->print(switches[i].heaterTempSensorType == DewHeaterTempSensorType::NTCThermistor ? " selected" : "");
         response->print(">NTC Thermistor</option></select>");
 
-        response->print("<label>Heater Temperature Sensor Pin</label><input type='number' min='-1' max='16' name='dh_ds_");
+        response->print("<label>Heater Temperature Sensor Pin (17 = A0/NTC)</label><input type='number' min='-1' max='17' name='dh_ds_");
         response->print(i);
         response->print("' value='");
         response->print(switches[i].heaterTempPin);
@@ -1931,226 +2392,95 @@ public:
 
       response->print("<p><a href='");
       response->print(setupUrl);
-      response->print("'>Back to Main Setup</a></p></body></html>");
+      #endif // end dead code
+    }
+
+    if (bank == 1) {
+      String dht22Url = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/dht22";
+      AsyncResponseStream *response = request->beginResponseStream("text/html");
+      if (response == nullptr) { request->send(500, "text/plain", "Failed to create response"); return; }
+      response->print("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>");
+      response->print("<title>DHT22 Sensor Setup</title>");
+      response->print("<style>body{font-family:Arial,sans-serif;margin:20px;} a{display:block;margin:10px 0;font-size:1.1em;}</style></head><body>");
+      response->print("<h1>DHT22 Sensor Setup</h1>");
+      response->print("<p><a href='"); response->print(dht22Url); response->print("'>&#9654; Configure DHT22 Sensors (Switches 2-3)</a>");
+      response->print("<a href='"); response->print(setupUrl); response->print("'>&#8592; Back to Main Setup</a></p>");
+      response->print("</body></html>");
       request->send(response);
       return;
     }
 
-    if (bank == 1) {
-      String html;
-      if (!html.reserve(7000)) {
-        String minimal = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>DHT22 Setup</title></head><body>";
-        minimal += "<h2>DHT22 Setup</h2><p>Not enough memory to render full page. Please reboot device.</p>";
-        minimal += "<p><a href='" + setupUrl + "?bank=1'>Reload</a></p></body></html>";
-        request->send(200, "text/html", minimal);
-        return;
-      }
-
-      html = "<!DOCTYPE html><html><head>";
-      html += "<meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-      html += "<title>DHT22 Sensor Setup</title>";
-      html += "<style>body{font-family:Arial,sans-serif;margin:20px;background:#f0f0f0;}";
-      html += ".container{max-width:720px;margin:0 auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1);}";
-      html += ".card{background:#f9f9f9;padding:15px;border-radius:6px;margin-bottom:14px;}";
-      html += "label{display:block;margin:8px 0 4px;color:#555;font-size:.9em;}";
-      html += "input[type='text'],input[type='number'],select{width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;}";
-      html += "input[type='submit']{margin-top:10px;background:#0066cc;color:#fff;border:none;border-radius:4px;padding:9px 16px;cursor:pointer;}";
-      html += ".grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;} .full{grid-column:1/-1;} .help{font-size:.85em;color:#666;margin-top:4px;}";
-      html += "</style></head><body><div class='container'>";
-      html += "<h1>DHT22 Sensor Setup &mdash; Switches 2-3</h1>";
-      html += "<div class='card'><p>Configure fixed DHT22/AM2302 roles: switch 2 = temperature, switch 3 = humidity.</p></div>";
-      html += "<form method='POST' action='" + setupUrl + "'>";
-      html += "<input type='hidden' name='dht22_page' value='1'>";
-      html += "<input type='hidden' name='bank' value='1'>";
-
+    // bank==0: custom switch nav page
+    if (bank == 0) {
+      String cs0Url = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/customswitch/0";
+      String cs1Url = "/setup/v1/switch/" + String(GetDeviceNumber()) + "/customswitch/1";
+      AsyncResponseStream *response = request->beginResponseStream("text/html");
+      if (response == nullptr) { request->send(500, "text/plain", "Failed to create response"); return; }
+      response->print("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>");
+      response->print("<title>Custom Switch Setup</title>");
+      response->print("<style>body{font-family:Arial,sans-serif;margin:20px;} a{display:block;margin:10px 0;font-size:1.1em;}</style></head><body>");
+      response->print("<h1>Custom Switch Setup</h1>");
+      response->print("<p><a href='"); response->print(cs0Url); response->print("'>&#9654; Custom Switch 0</a>");
+      response->print("<a href='"); response->print(cs1Url); response->print("'>&#9654; Custom Switch 1</a>");
+      response->print("<a href='"); response->print(setupUrl); response->print("'>&#8592; Back to Main Setup</a></p>");
+      response->print("</body></html>");
+      request->send(response);
+      return;
+      // (dead code removed - old DHT22 form, was unreachable after bank==1 return)
+      AsyncResponseStream *response1 = nullptr;
+      response1->print("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>");
+      response1->print("<title>DHT22 Sensor Setup</title>");
+      response1->print("<style>body{font-family:Arial,sans-serif;margin:20px;background:#f0f0f0;}");
+      response1->print(".container{max-width:720px;margin:0 auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1);}");
+      response1->print(".card{background:#f9f9f9;padding:15px;border-radius:6px;margin-bottom:14px;}");
+      response1->print("label{display:block;margin:8px 0 4px;color:#555;font-size:.9em;}");
+      response1->print("input[type='text'],input[type='number']{width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;}");
+      response1->print("input[type='submit']{margin-top:10px;background:#0066cc;color:#fff;border:none;border-radius:4px;padding:9px 16px;cursor:pointer;}");
+      response1->print(".grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;} .full{grid-column:1/-1;} .help{font-size:.85em;color:#666;margin-top:4px;}");
+      response1->print("</style></head><body><div class='container'>");
+      response1->print("<h1>DHT22 Sensor Setup &mdash; Switches 2-3</h1>");
+      response1->print("<div class='card'><p>Configure fixed DHT22/AM2302 roles: switch 2 = temperature, switch 3 = humidity.</p></div>");
+      response1->print("<form method='POST' action='"); response1->print(setupUrl); response1->print("'>");
+      response1->print("<input type='hidden' name='dht22_page' value='1'>");
+      response1->print("<input type='hidden' name='bank' value='1'>");
       for (int i = 2; i <= 3 && i < maxSwitch; i++) {
-        html += "<div class='card'><h2>Switch " + String(i) + " (" + String(i == 2 ? "Temperature" : "Humidity") + ")</h2><div class='grid'>";
-        html += "<div class='full'><label>Name</label><input type='text' name='dht22_name_" + String(i) + "' maxlength='15' value='" + escapeHtml(String(switches[i].name.c_str())) + "'></div>";
-        html += "<div class='full'><label>Description</label><input type='text' name='dht22_desc_" + String(i) + "' maxlength='20' value='" + escapeHtml(String(switches[i].description.c_str())) + "'></div>";
-        html += "<div><label>Mode</label><input type='text' value='" + String(i == 2 ? "Temperature" : "Humidity") + "' readonly></div>";
-        html += "<div><label>DHT22/AM2302 Data Pin</label><input type='number' min='-1' max='16' name='dht22_pin_" + String(i) + "' value='" + String(switches[i].tempInputPin) + "'></div>";
-        html += "<div><label>Temperature Offset (°C)</label><input type='number' step='0.1' name='dht22_offset_" + String(i) + "' value='" + String(switches[i].dhtTempOffsetC, 2) + "'></div>";
-        html += "<div><label>Current Value</label><input type='text' value='" + String(switches[i].value, 2) + "' readonly></div>";
-        html += "<div class='full help'>Temperature offset is applied only on switch 2 (temperature).</div>";
-        html += "</div></div>";
+        response1->print("<div class='card'><h2>Switch "); response1->print(i);
+        response1->print(i == 2 ? " (Temperature)" : " (Humidity)");
+        response1->print("</h2><div class='grid'>");
+        response1->print("<div class='full'><label>Name</label><input type='text' name='dht22_name_"); response1->print(i);
+        response1->print("' maxlength='15' value='"); response1->print(escapeHtml(String(switches[i].name.c_str()))); response1->print("'></div>");
+        response1->print("<div class='full'><label>Description</label><input type='text' name='dht22_desc_"); response1->print(i);
+        response1->print("' maxlength='20' value='"); response1->print(escapeHtml(String(switches[i].description.c_str()))); response1->print("'></div>");
+        response1->print("<div><label>Mode</label><input type='text' value='");
+        response1->print(i == 2 ? "Temperature" : "Humidity"); response1->print("' readonly></div>");
+        response1->print("<div><label>DHT22/AM2302 Data Pin</label><input type='number' min='-1' max='16' name='dht22_pin_"); response1->print(i);
+        response1->print("' value='"); response1->print(switches[i].tempInputPin); response1->print("'></div>");
+        { char fb[12]; response1->print("<div><label>Temperature Offset (&deg;C)</label><input type='number' step='0.1' name='dht22_offset_"); response1->print(i);
+        response1->print("' value='"); dtostrf(switches[i].dhtTempOffsetC, 4, 2, fb); response1->print(fb); response1->print("'></div>"); }
+        { char fb[12]; response1->print("<div><label>Current Value</label><input type='text' value='");
+        dtostrf(switches[i].value, 4, 2, fb); response1->print(fb); response1->print("' readonly></div>"); }
+        response1->print("<div class='full help'>Temperature offset is applied only on switch 2 (temperature).</div>");
+        response1->print("</div></div>");
       }
-
       if (maxSwitch > 8) {
-        html += "<div class='card'><h2>Switch 8 (Dew Point)</h2><div class='grid'>";
-        html += "<div class='full'><label>Name</label><input type='text' value='" + escapeHtml(String(switches[8].name.c_str())) + "' readonly></div>";
-        html += "<div class='full'><label>Description</label><input type='text' value='" + escapeHtml(String(switches[8].description.c_str())) + "' readonly></div>";
-        html += "<div><label>Mode</label><input type='text' value='Calculated Dew Point' readonly></div>";
-        html += "<div><label>DHT22/AM2302 Data Pin</label><input type='number' value='" + String(switches[8].tempInputPin) + "' readonly></div>";
-        html += "<div><label>Current Value (°C)</label><input type='text' value='" + String(switches[8].value, 2) + "' readonly></div>";
-        html += "<div class='full help'>This switch is read-only and automatically calculated from ambient temperature and humidity.</div>";
-        html += "</div></div>";
+        response1->print("<div class='card'><h2>Switch 8 (Dew Point)</h2><div class='grid'>");
+        response1->print("<div class='full'><label>Name</label><input type='text' value='"); response1->print(escapeHtml(String(switches[8].name.c_str()))); response1->print("' readonly></div>");
+        response1->print("<div class='full'><label>Description</label><input type='text' value='"); response1->print(escapeHtml(String(switches[8].description.c_str()))); response1->print("' readonly></div>");
+        response1->print("<div><label>Mode</label><input type='text' value='Calculated Dew Point' readonly></div>");
+        response1->print("<div><label>DHT22/AM2302 Data Pin</label><input type='number' value='"); response1->print(switches[8].tempInputPin); response1->print("' readonly></div>");
+        { char fb[12]; response1->print("<div><label>Current Value (&deg;C)</label><input type='text' value='");
+        dtostrf(switches[8].value, 4, 2, fb); response1->print(fb); response1->print("' readonly></div>"); }
+        response1->print("<div class='full help'>Read-only, calculated from ambient temperature and humidity.</div>");
+        response1->print("</div></div>");
       }
-
-      html += "<input type='submit' value='Save DHT22 Sensor Settings'>";
-      html += "</form>";
-      html += "<p><a href='" + setupUrl + "'>Back to Main Setup</a></p>";
-      html += "<p><a href='" + setupUrl + "?bank=0'>Open Custom Switch 0-1</a></p>";
-      html += "</div></body></html>";
-      request->send(200, "text/html", html);
+      response1->print("<input type='submit' value='Save DHT22 Sensor Settings'></form>");
+      response1->print("<p><a href='"); response1->print(setupUrl); response1->print("'>Back to Main Setup</a></p>");
+      response1->print("<p><a href='"); response1->print(setupUrl); response1->print("?bank=0'>Open Custom Switch 0-1</a></p>");
+      response1->print("</div></body></html>");
+      request->send(response1);
       return;
     }
 
-    String html;
-    if (!html.reserve(8500)) {
-      String minimal = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Switch Setup</title></head><body>";
-      minimal += "<h2>Switch Setup</h2><p>Not enough memory to render full page. Please reduce switch count or reboot device.</p>";
-      minimal += "<p><a href='" + setupUrl + "'>Reload</a></p></body></html>";
-      request->send(200, "text/html", minimal);
-      return;
-    }
-    html = "<!DOCTYPE html><html><head>";
-    html += "<meta charset='UTF-8'>";
-    html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<title>Switch Setup</title>";
-    html += "<style>";
-    html += "body{font-family:Arial,sans-serif;margin:20px;background-color:#f0f0f0;}";
-    html += "h1{color:#333;}";
-    html += ".container{max-width:720px;margin:0 auto;background-color:white;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1);}";
-    html += ".info-section{background-color:#e8f4f8;padding:15px;border-radius:5px;margin-bottom:20px;}";
-    html += ".info-row{display:flex;justify-content:space-between;margin:6px 0;}";
-    html += ".info-label{font-weight:bold;color:#555;}";
-    html += ".info-value{color:#0066cc;}";
-    html += ".form-section{background-color:#f9f9f9;padding:15px;border-radius:5px;margin-bottom:15px;}";
-    html += "h2{color:#555;font-size:1.15em;margin-top:0;}";
-    html += ".sw-card{border:1px solid #ddd;border-radius:6px;padding:12px;margin-bottom:12px;background:#fff;}";
-    html += ".sw-title{font-weight:bold;font-size:1em;color:#0066cc;margin-bottom:8px;}";
-    html += ".sw-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;}";
-    html += ".sw-full{grid-column:1/-1;}";
-    html += "label{font-size:.85em;color:#555;display:block;margin-bottom:1px;}";
-    html += "input[type='text'],input[type='number']{width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;font-size:.9em;}";
-    html += "input[type='password']{width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;}";
-    html += ".cb-row{display:flex;gap:16px;align-items:center;margin-top:4px;}";
-    html += ".cb-row label{font-size:.85em;color:#444;display:flex;align-items:center;gap:4px;margin:0;}";
-    html += "input[type='submit']{background-color:#0066cc;color:white;padding:9px 20px;border:none;border-radius:4px;cursor:pointer;margin-top:10px;font-size:.95em;}";
-    html += "input[type='submit']:hover{background-color:#0052a3;}";
-    html += ".on{color:#00aa00;font-weight:bold;} .off{color:#cc0000;font-weight:bold;}";
-    html += ".help-text{font-size:.85em;color:#888;margin-top:3px;}";
-    html += ".type-help{background:#eef6ff;border-left:4px solid #0066cc;padding:8px 10px;border-radius:4px;color:#355;font-size:.84em;grid-column:1/-1;}";
-    html += "</style>";
-    html += "</head><body><div class='container'>";
-    html += "<h1>Switch Setup &mdash; " + GetDeviceName() + "</h1>";
-
-    // Status
-    html += "<div class='info-section'><h2>Device Status</h2>";
-    html += "<div class='info-row'><span class='info-label'>Page:</span><span class='info-value'>Custom Switch 0-1</span></div>";
-    html += "<div class='info-row'><span class='info-label'>Device Number:</span><span class='info-value'>" + String(GetDeviceNumber()) + "</span></div>";
-    html += "<div class='info-row'><span class='info-label'>Switches:</span><span class='info-value'>" + String(maxSwitch) + "</span></div>";
-    html += "</div>";
-
-    // WiFi status
-    html += "<div class='info-section'><h2>WiFi Status</h2>";
-    if (WiFi.getMode() == WIFI_AP) {
-      html += "<div class='info-row'><span class='info-label'>Mode:</span><span class='info-value' style='color:#ff9900;'>Access Point</span></div>";
-      html += "<div class='info-row'><span class='info-label'>AP SSID:</span><span class='info-value'>" + String(WiFi.softAPSSID()) + "</span></div>";
-      html += "<div class='info-row'><span class='info-label'>IP:</span><span class='info-value'>" + WiFi.softAPIP().toString() + "</span></div>";
-    } else {
-      html += "<div class='info-row'><span class='info-label'>Mode:</span><span class='info-value' style='color:#00aa00;'>Station</span></div>";
-      html += "<div class='info-row'><span class='info-label'>SSID:</span><span class='info-value'>" + String(WiFi.SSID()) + "</span></div>";
-      html += "<div class='info-row'><span class='info-label'>IP:</span><span class='info-value'>" + WiFi.localIP().toString() + "</span></div>";
-      html += "<div class='info-row'><span class='info-label'>Signal:</span><span class='info-value'>" + String(WiFi.RSSI()) + " dBm</span></div>";
-    }
-    html += "<div class='info-row'><span class='info-label'>Hostname:</span><span class='info-value'>" + String(WiFi.hostname()) + "</span></div>";
-    html += "</div>";
-
-    // Switch configuration form (one form, all switches as cards)
-    html += "<div class='form-section'>";
-    html += "<form method='POST' action='" + setupUrl + "'>";
-    html += "<input type='hidden' name='bank' value='" + String(bank) + "'>";
-    html += "<h2>Switch Configuration</h2>";
-    html += "<p class='help-text'>All changes are saved to EEPROM and survive reboots.</p>";
-
-    int fromIdx = 0;
-    int toIdx = 2;
-    if (fromIdx > maxSwitch) fromIdx = maxSwitch;
-    if (toIdx > maxSwitch) toIdx = maxSwitch;
-
-    for (int i = fromIdx; i < toIdx; i++) {
-      bool isOn = switches[i].value > 0.0;
-      html += "<div class='sw-card'>";
-      html += "<div class='sw-title'>Switch " + String(i) + " &nbsp;<span class='" + String(isOn?"on":"off") + "'>" + String(isOn?"ON":"OFF") + "</span></div>";
-      html += "<div class='sw-grid'>";
-
-      // Name
-      html += "<div class='sw-full'><label>Name (max 15 chars)</label>";
-      html += "<input type='text' name='swname_" + String(i) + "' value='" + escapeHtml(String(switches[i].name.c_str())) + "' maxlength='15'></div>";
-
-      // Description
-      html += "<div class='sw-full'><label>Description (max 20 chars)</label>";
-      html += "<input type='text' name='swdesc_" + String(i) + "' value='" + escapeHtml(String(switches[i].description.c_str())) + "' maxlength='20'></div>";
-
-      // Type
-      html += "<div class='sw-full'><label>Switch Type</label>";
-      html += "<select name='swtype_" + String(i) + "' style='width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;font-size:.9em;'>";
-      html += "<option value='0'" + String(switches[i].type == SwitchType::Default ? " selected" : "") + ">Default</option>";
-      html += "<option value='2'" + String(switches[i].type == SwitchType::DHT22Temp ? " selected" : "") + ">DHT22 Temp</option>";
-      html += "<option value='3'" + String(switches[i].type == SwitchType::DHT22Humidity ? " selected" : "") + ">DHT22 Humidity</option>";
-      html += "<option value='4'" + String(switches[i].type == SwitchType::DS18B20Temp ? " selected" : "") + ">DS18B20 Temp</option>";
-      html += "</select></div>";
-      html += "<div class='type-help' id='swtypehelp_" + String(i) + "'>" + escapeHtml(getSwitchTypeHelpText(switches[i].type)) + "</div>";
-
-      // Min / Max / Step / Value
-      html += "<div><label>Min Value</label>";
-      html += "<input type='number' step='any' name='swmin_" + String(i) + "' value='" + String(switches[i].minValue, 4) + "'></div>";
-
-      html += "<div><label>Max Value</label>";
-      html += "<input type='number' step='any' name='swmax_" + String(i) + "' value='" + String(switches[i].maxValue, 4) + "'></div>";
-
-      html += "<div><label>Step Size</label>";
-      html += "<input type='number' step='any' name='swstep_" + String(i) + "' value='" + String(switches[i].stepValue, 4) + "'></div>";
-
-      html += "<div><label>Current Value</label>";
-      if (switches[i].canWrite) {
-        html += "<input type='number' step='any' name='swval_" + String(i) + "' value='" + String(switches[i].value, 4) + "'>";
-      } else {
-        html += "<input type='number' step='any' name='swval_" + String(i) + "' value='" + String(switches[i].value, 4) + "' readonly>";
-      }
-      html += "</div>";
-
-      // GPIO pin
-      html += "<div><label>GPIO Pin (-1 = none)</label>";
-      html += "<input type='number' name='swpin_" + String(i) + "' value='" + String(switches[i].outputPin) + "' min='-1' max='16'></div>";
-
-      // Checkboxes
-      html += "<div class='sw-grid' style='grid-column:1/-1;'>";
-      html += "<div class='cb-row'>";
-      html += "<label><input type='checkbox' name='swrw_"    + String(i) + "'" + String(switches[i].canWrite  ? " checked" : "") + "> Can Write (R/W)</label>";
-      html += "<label><input type='checkbox' name='swasync_" + String(i) + "'" + String(switches[i].canAsync  ? " checked" : "") + "> Async (ISwitchV3+)</label>";
-      html += "<label><input type='checkbox' name='swpwm_"   + String(i) + "'" + String(switches[i].isPWM     ? " checked" : "") + "> PWM (analog) output</label>";
-      html += "</div></div>";
-
-      html += "</div></div>"; // sw-grid / sw-card
-    }
-
-    html += "<input type='submit' value='Save All Switches'>";
-    html += "</form></div>";
-
-    html += "<p><a href='" + setupUrl + "'>Back to Main Setup</a></p>";
-    html += "<p><a href='" + setupUrl + "?bank=1'>Open DHT22 Sensors 2-3</a></p>";
-
-    html += "<script>";
-    html += "function getSwitchTypeHelp(v){switch(String(v)){";
-    html += "case '1': return 'GPIO Pin = heater PWM output. Temp Input GPIO = DHT22/AM2302 ambient sensor. Heater Temp GPIO = DS18B20 on heater. Current Value = target offset above dew point in °C.';";
-    html += "case '2': return 'Temp Input GPIO = DHT22/AM2302 data pin. Current Value is read-only live ambient temperature in °C.';";
-    html += "case '3': return 'Temp Input GPIO = DHT22/AM2302 data pin. Current Value is read-only live relative humidity in %.';";
-    html += "case '4': return 'Heater Temp GPIO = DS18B20 data pin. Current Value is read-only live temperature in °C.';";
-    html += "default: return 'GPIO Pin controls the output. Current Value is the switch value. Sensor GPIO fields are optional and unused in default mode.';";
-    html += "}}";
-    html += "function bindSwitchTypeHelp(i){var sel=document.getElementsByName('swtype_'+i)[0];var box=document.getElementById('swtypehelp_'+i);if(!sel||!box)return;var upd=function(){box.textContent=getSwitchTypeHelp(sel.value);};sel.addEventListener('change',upd);upd();}";
-    for (int i = fromIdx; i < toIdx; i++) {
-      html += "bindSwitchTypeHelp(" + String(i) + ");";
-    }
-    html += "</script>";
-
-    html += "<p style='text-align:center;color:#aaa;font-size:.85em;margin-top:24px;'>";
-    html += "<a href='/management/v1/description' style='color:#0066cc;text-decoration:none;'>Back to Management API</a>";
-    html += "</p>";
-    html += "</div></body></html>";
-    request->send(200, "text/html", html);
   }
 };
 
