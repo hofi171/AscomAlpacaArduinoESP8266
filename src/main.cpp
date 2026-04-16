@@ -20,6 +20,11 @@
 #include "alpaca_api/Alpaca_Management.h"
 #include "alpaca_api/Alpaca_Discovery.h"
 #include "WiFi_Config.h"
+// Number of decimal digits to round switch values returned via the Alpaca API.
+// Adjust as needed — applies to GetSwitchValue, GetMinSwitchValue,
+// GetMaxSwitchValue, and GetSwitchStep.
+const int SWITCH_VALUE_DECIMAL_DIGITS = 1;
+
 #include "implementation/ArduinoSwitch.h"
 
 #define HOSTNAME "Arduino-Alpaca-Switch"

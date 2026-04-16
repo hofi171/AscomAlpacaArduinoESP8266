@@ -11,6 +11,9 @@
 // Forward declaration for accessing global WiFiConfig
 extern WiFiConfig wifiConfig;
 
+// Decimal digits used to round switch values in Alpaca API responses (defined in main.cpp)
+extern const int SWITCH_VALUE_DECIMAL_DIGITS;
+
 /**
  * @file ArduinoSwitch.h
  * @brief Example implementation of Switch device
@@ -364,7 +367,7 @@ private:
       switches[i].canWrite  = (d.flags & 0x01) != 0;
       switches[i].canAsync  = (d.flags & 0x02) != 0;
       switches[i].isPWM     = (d.flags & 0x04) != 0;
-      switches[i].enabled   = (d.flags & 0x80) != 0;
+      switches[i].enabled   = false; // Always start disabled at boot — state is not persisted
       uint8_t typeBits = (d.flags >> 3) & 0x07;
       if (typeBits <= (uint8_t)SwitchType::DewHeaterOutputPct) {
         switches[i].type = (SwitchType)typeBits;
@@ -439,7 +442,7 @@ private:
     if (switches[id].isPWM)    d.flags |= 0x04;
     d.flags |= (((uint8_t)switches[id].type) & 0x07) << 3;
     if (switches[id].dewHeaterMode == DewHeaterMode::Manual) d.flags |= 0x40;
-    if (switches[id].enabled) d.flags |= 0x80;
+    // enabled state is intentionally NOT saved — switches always start disabled at boot
     d.value     = (float)switches[id].value;
     d.minValue  = (float)switches[id].minValue;
     d.maxValue  = (float)switches[id].maxValue;
@@ -1178,15 +1181,19 @@ public:
    * @param switchNumber Switch ID
    * @return Value as double
    */
+  // Round a value to the configured number of decimal digits for API responses.
+  static double roundApiValue(double v) {
+    double factor = 1.0;
+    for (int i = 0; i < SWITCH_VALUE_DECIMAL_DIGITS; i++) factor *= 10.0;
+    return round(v * factor) / factor;
+  }
+
   double GetSwitchValue(int switchNumber) override {
     if (!isValidSwitchId(switchNumber)) return 0.0;
     if (usesDewHeaterHelper(switches[switchNumber].type)) {
       refreshSwitchSensorState(switchNumber);
     }
-    if (switches[switchNumber].type == SwitchType::DewHeater) {
-      return switches[switchNumber].value;
-    }
-    return switches[switchNumber].value;
+    return roundApiValue(switches[switchNumber].value);
   }
   
   /**
@@ -1196,7 +1203,7 @@ public:
    */
   double GetMinSwitchValue(int switchNumber) override {
     if (!isValidSwitchId(switchNumber)) return 0.0;
-    return switches[switchNumber].minValue;
+    return roundApiValue(switches[switchNumber].minValue);
   }
   
   /**
@@ -1206,7 +1213,7 @@ public:
    */
   double GetMaxSwitchValue(int switchNumber) override {
     if (!isValidSwitchId(switchNumber)) return 1.0;
-    return switches[switchNumber].maxValue;
+    return roundApiValue(switches[switchNumber].maxValue);
   }
   
   /**
@@ -1226,7 +1233,7 @@ public:
    */
   double GetSwitchStep(int switchNumber) override {
     if (!isValidSwitchId(switchNumber)) return 1.0;
-    return switches[switchNumber].stepValue;
+    return roundApiValue(switches[switchNumber].stepValue);
   }
   
   /**
