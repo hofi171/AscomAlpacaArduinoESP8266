@@ -33,6 +33,7 @@ private:
   DallasTemperature sensors; // DallasTemperature object for reading temperature
   double TEMPOFFSET = 0.0; // Temperature offset for compensation (adjustable) 
 
+  bool ledDisabled;                  // true = onboard LED disabled (GPIO2 HIGH)
   bool absolute;                    // Supports absolute positioning
   int maxStep;                      // Maximum step position
   int maxIncrement;                 // Maximum increment per move
@@ -61,9 +62,12 @@ private:
   unsigned long stepDelayMicros;    // Delay between steps (microseconds)
   
   // EEPROM storage (ArduinoStepper uses addresses 0-7 for position and mode)
-  static const int EEPROM_TEMPOFFSET_ADDR = 8;  // EEPROM address for temperature offset (8 bytes, double)
-  static const int EEPROM_TEMP_PIN_ADDR = 154;  // EEPROM address for temperature sensor pin (1 byte)
-  static const int EEPROM_SIZE = 512;            // Total EEPROM size to allocate
+  static const int EEPROM_TEMPOFFSET_ADDR = 8;   // EEPROM address for temperature offset (8 bytes, double)
+  static const int EEPROM_TEMP_PIN_ADDR = 154;   // EEPROM address for temperature sensor pin (1 byte)
+  static const int EEPROM_LED_DISABLE_ADDR = 155; // EEPROM address for LED disable flag (1 byte)
+  static const int EEPROM_SIZE = 512;             // Total EEPROM size to allocate
+
+  static const int LED_PIN = 2; // GPIO2 is the onboard LED (active LOW)
   
   /**
    * @brief Update focuser movement
@@ -178,6 +182,30 @@ private:
     LOG_INFO("Saved temperature sensor pin to EEPROM: GPIO " + String(TEMP_PIN));
   }
 
+  void loadLedStateFromEEPROM() {
+    uint8_t stored = EEPROM.read(EEPROM_LED_DISABLE_ADDR);
+    // 0x01 = disabled, anything else = enabled (treat uninitialized 0xFF as enabled)
+    ledDisabled = (stored == 0x01);
+    LOG_INFO(String("Loaded LED disable state from EEPROM: ") + (ledDisabled ? "disabled" : "enabled"));
+  }
+
+  void saveLedStateToEEPROM() {
+    EEPROM.write(EEPROM_LED_DISABLE_ADDR, ledDisabled ? 0x01 : 0x00);
+    EEPROM.commit();
+    LOG_INFO(String("Saved LED disable state to EEPROM: ") + (ledDisabled ? "disabled" : "enabled"));
+  }
+
+  void applyLedState() {
+    pinMode(LED_PIN, OUTPUT);
+    if (ledDisabled) {
+      digitalWrite(LED_PIN, HIGH); // HIGH = LED off (active LOW)
+      LOG_INFO("Onboard LED disabled (GPIO2 HIGH)");
+    } else {
+      digitalWrite(LED_PIN, LOW);  // LOW = LED on
+      LOG_INFO("Onboard LED enabled (GPIO2 LOW)");
+    }
+  }
+
   void initializeTemperatureSensor() {
     LOG_INFO("Initializing temperature sensor on GPIO " + String(TEMP_PIN));
     oneWire = OneWire(TEMP_PIN);
@@ -203,6 +231,7 @@ public:
             AsyncWebServer &server, int max_step = 10000, double step_size_microns = 5.0,
             int step_pin = -1, int dir_pin = -1, int enable_pin = -1)
     : AlpacaDeviceFocuser(devicename, devicenumber, description, server, true), // hasSetup = true
+      ledDisabled(false),
       absolute(true),
       maxStep(max_step),
       maxIncrement(1000),
@@ -226,6 +255,10 @@ public:
     // Load and initialize temperature sensor pin
     loadTemperaturePinFromEEPROM();
     initializeTemperatureSensor();
+
+    // Load and apply onboard LED disable state
+    loadLedStateFromEEPROM();
+    applyLedState();
 
     LOG_DEBUG("ArduinoFocuser created - MaxStep: " + String(maxStep) + " StepSize: " + String(stepSize) + " microns");
   }
@@ -470,6 +503,16 @@ public:
     return TEMPOFFSET;
   }
 
+  bool GetLedDisabled() const {
+    return ledDisabled;
+  }
+
+  void SetLedDisabled(bool disabled) {
+    ledDisabled = disabled;
+    saveLedStateToEEPROM();
+    applyLedState();
+  }
+
   int GetTemperaturePin() const {
     return TEMP_PIN;
   }
@@ -517,6 +560,16 @@ public:
 
       String message = "";
       
+      if (request->hasParam("led_disabled", true)) {
+        bool newState = request->getParam("led_disabled", true)->value() == "1";
+        SetLedDisabled(newState);
+        message += String("Onboard LED ") + (newState ? "disabled" : "enabled") + " (saved to EEPROM)<br>";
+      } else if (request->hasParam("led_disabled_field", true)) {
+        // Hidden sentinel: form was submitted but checkbox was unchecked
+        SetLedDisabled(false);
+        message += "Onboard LED enabled (saved to EEPROM)<br>";
+      }
+
       // Check for position update
       if (request->hasParam("position", true)) {
         String posStr = request->getParam("position", true)->value();
@@ -657,6 +710,7 @@ public:
     html += "<div class='info-row'><span class='info-label'>Temperature Sensor Pin:</span><span class='info-value'>GPIO " + String(GetTemperaturePin()) + "</span></div>";
     html += "<div class='info-row'><span class='info-label'>Max Position:</span><span class='info-value'>" + String(maxStep) + " steps</span></div>";
     html += "<div class='info-row'><span class='info-label'>Step Size:</span><span class='info-value'>" + String(stepSize, 2) + " microns</span></div>";
+    html += "<div class='info-row'><span class='info-label'>Onboard LED (GPIO2):</span><span class='info-value' style='color: " + String(GetLedDisabled() ? "#cc0000" : "#00aa00") + ";'>" + String(GetLedDisabled() ? "Disabled" : "Enabled") + "</span></div>";
     html += "<div class='info-row'><span class='info-label'>Moving:</span><span class='info-value'>" + String(GetIsMoving() ? "Yes" : "No") + "</span></div>";
     html += "</div>";
     
@@ -696,6 +750,20 @@ public:
     html += "<div class='info-row'><span class='info-label'>Pin 4:</span><span class='info-value'>GPIO " + String(stepper->getPin4()) + "</span></div>";
     html += "</div>";
     
+    // LED Disable form
+    html += "<div class='form-section'>";
+    html += "<form method='POST' action='/setup/v1/focuser/" + String(GetDeviceNumber()) + "/setup'>";
+    html += "<h2>Onboard LED (GPIO2)</h2>";
+    html += "<input type='hidden' name='led_disabled_field' value='1'>";
+    html += "<label style='display:flex;align-items:center;gap:10px;cursor:pointer;'>";
+    html += "<input type='checkbox' id='led_disabled' name='led_disabled' value='1'" + String(GetLedDisabled() ? " checked" : "") + " style='width:auto;'>";
+    html += "&nbsp;Disable onboard LED (GPIO2 HIGH)";
+    html += "</label>";
+    html += "<div class='help-text'>When checked, GPIO2 is driven HIGH so the active-LOW LED stays off. State is persisted in EEPROM.</div>";
+    html += "<input type='submit' value='Save LED Setting'>";
+    html += "</form>";
+    html += "</div>";
+
     // Set Position form
     html += "<div class='form-section'>";
     html += "<form method='POST' action='/setup/v1/focuser/" + String(GetDeviceNumber()) + "/setup'>";

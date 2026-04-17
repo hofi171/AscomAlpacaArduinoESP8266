@@ -37,12 +37,9 @@ WiFiConfig wifiConfig; // WiFi configuration manager
 ArduinoFocuser *focuser = nullptr;
 
 
-const int ledPin = 2; // GPIO2 is the built-in LED on most ESP8266 boards
-
 void setup()
 {
   LOG_INFO("Start Setup");
-  pinMode(ledPin, OUTPUT);
   Serial.begin(115200);
   EEPROM.begin(512);
   
