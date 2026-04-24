@@ -1,6 +1,6 @@
 // You can also set default log level by defining macro (default: INFO)
 // Levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
-#define DEBUG_LOG_LEVEL LOG_LEVEL_INFO
+#define DEBUG_LOG_LEVEL LOG_LEVEL_DEBUG
 #include "DebugLog.h"
 
 #include <Arduino.h>
@@ -20,6 +20,7 @@
 #include "alpaca_api/Alpaca_Management.h"
 #include "alpaca_api/Alpaca_Discovery.h"
 #include "WiFi_Config.h"
+
 // Number of decimal digits to round switch values returned via the Alpaca API.
 // Adjust as needed — applies to GetSwitchValue, GetMinSwitchValue,
 // GetMaxSwitchValue, and GetSwitchStep.
@@ -48,6 +49,7 @@ void setup()
 {
   LOG_INFO("Start Setup");
   pinMode(ledPin, OUTPUT);
+  LOG_INFO("Pin mode set for LED pin %d", ledPin);
   Serial.begin(115200);
   EEPROM.begin(2048);
   
@@ -87,6 +89,7 @@ void setup()
     LOG_INFO("Connected to %s", wifiSSID.c_str());
     LOG_INFO("IP address: %s", WiFi.localIP().toString().c_str());
     LOG_INFO("Hostname: %s.local", hostname);
+
   } else {
     // Connection failed - start AP mode
     LOG_WARN("Failed to connect to WiFi network: %s", wifiSSID.c_str());
@@ -137,7 +140,6 @@ void setup()
     LOG_INFO("Start server.begin();");
     server.begin();
     LOG_INFO("Done server.begin();");
-
     LOG_INFO("HTTP server started");
   }
   catch (const std::exception &e)

@@ -61,11 +61,13 @@ DewHeater::~DewHeater() {
 void DewHeater::begin() {
   if (heaterOutputPin >= 0) {
     pinMode(heaterOutputPin, OUTPUT);
+    LOG_INFO("Pin mode set for heater output pin %d", heaterOutputPin);
     analogWrite(heaterOutputPin, 0);
   }
 
   if (dhtPin >= 0) {
     dht.begin();
+    lastReadMs = millis(); // DHT22 needs ~2 s warm-up; delay first read by readIntervalMs
   }
 
   if (heaterTempSensorPin >= 0) {
@@ -75,6 +77,7 @@ void DewHeater::begin() {
       heaterSensors->begin();
     } else if (heaterTempSensorType == HeaterTempSensorType::NTCThermistor) {
       pinMode(heaterTempSensorPin, INPUT);
+      LOG_INFO("Pin mode set for NTC thermistor heater temperature sensor pin %d", heaterTempSensorPin);
     }
   }
 }
@@ -103,15 +106,23 @@ bool DewHeater::update() {
     }
 
     if (!useCachedReading) {
+      // ESP8266 WiFi activity can corrupt DHT timing — retry once on failure
       float newHumidity = dht.readHumidity();
       float newTemperature = dht.readTemperature();
+      if (isnan(newHumidity) || isnan(newTemperature)) {
+        delay(20);
+        newHumidity = dht.readHumidity();
+        newTemperature = dht.readTemperature();
+        LOG_WARN("DHT retry read on pin %d: humidity=%.1f temperature=%.1f", dhtPin, newHumidity, newTemperature);
+      }
 
       if (isnan(newHumidity) || isnan(newTemperature) ||
           newHumidity < 0.0f || newHumidity > 100.0f) {
         sensorValid = false;
-        temperatureC = NAN;
+        temperatureC = -273.15f;
         humidityPercent = NAN;
         dewPointC = NAN;
+        LOG_ERROR("Failed to read from DHT sensor on pin " + String(dhtPin) + ": humidity=" + String(newHumidity) + " temperature=" + String(newTemperature));
 
         if (dhtPin <= 16) {
           DhtAmbientCacheEntry &cache = g_dhtAmbientCache[dhtPin];
@@ -120,6 +131,7 @@ bool DewHeater::update() {
             humidityPercent = cache.humidityPercent;
             dewPointC = cache.dewPointC;
             sensorValid = true;
+            LOG_WARN("Using cached DHT values for pin " + String(dhtPin) + " (last read " + String(now - cache.lastReadMs) + " ms ago)");
           }
         }
       } else {
@@ -140,12 +152,14 @@ bool DewHeater::update() {
       }
     } else {
       // cached values already applied
+      LOG_INFO("Using cached DHT values for pin %d", dhtPin);
     }
   } else {
     sensorValid = false;
     temperatureC = NAN;
     humidityPercent = NAN;
     dewPointC = NAN;
+    LOG_ERROR("DHT pin not configured, cannot read temperature/humidity");
   }
 
   if (heaterTempSensorType == HeaterTempSensorType::DS18B20 && heaterSensors != nullptr) {
@@ -159,7 +173,7 @@ bool DewHeater::update() {
         newHeaterTemperature < -55.0f ||
         newHeaterTemperature > 125.0f) {
       heaterTemperatureValid = false;
-      heaterTemperatureC = NAN;
+      heaterTemperatureC = -273.15f;
     } else {
       heaterTemperatureC = newHeaterTemperature + heaterTemperatureOffsetC;
       heaterTemperatureValid = true;
@@ -169,7 +183,7 @@ bool DewHeater::update() {
     if (isnan(newHeaterTemperature) || isinf(newHeaterTemperature) ||
         newHeaterTemperature < -55.0f || newHeaterTemperature > 125.0f) {
       heaterTemperatureValid = false;
-      heaterTemperatureC = NAN;
+      heaterTemperatureC = -273.15f;
     } else {
       heaterTemperatureC = newHeaterTemperature + heaterTemperatureOffsetC;
       heaterTemperatureValid = true;

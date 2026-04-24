@@ -409,13 +409,16 @@ private:
       if (switches[i].ntcAdcReferenceVoltage <= 0.0) switches[i].ntcAdcReferenceVoltage = 3.3;
       if (switches[i].outputPin >= 0) {
         pinMode(switches[i].outputPin, OUTPUT);
+        LOG_INFO("Pin mode set for output pin %d", switches[i].outputPin);
         applyOutput(i);
       }
       if (switches[i].tempInputPin >= 0) {
         pinMode(switches[i].tempInputPin, INPUT);
+        LOG_INFO("Pin mode set for temperature input pin %d", switches[i].tempInputPin);
       }
       if (switches[i].heaterTempPin >= 0) {
         pinMode(switches[i].heaterTempPin, INPUT);
+        LOG_INFO("Pin mode set for heater temperature pin %d", switches[i].heaterTempPin);
       }
       recreateDewHeater(i);
     }
@@ -423,7 +426,11 @@ private:
     uint8_t ledFlag = 0;
     EEPROM.get(EEPROM_LED_ADDR, ledFlag);
     ledDisabled = (ledFlag == 0xAB);
-    if (ledDisabled) { pinMode(2, OUTPUT); digitalWrite(2, HIGH); }
+    if (ledDisabled) { 
+      pinMode(2, OUTPUT); 
+      digitalWrite(2, HIGH); 
+      LOG_INFO("LED disabled, pin mode set for LED pin 2");
+    }
     // Safety temperature limits for dew heater slots
     for (int slot = 1; slot <= 2; slot++) {
       int si = getDewHeaterSwitchIndexFromSlot(slot);
@@ -1144,6 +1151,7 @@ public:
     // Initialize output pin if specified
     if (outputPin >= 0) {
       pinMode(outputPin, OUTPUT);
+      LOG_INFO("Initialized output pin " + String(outputPin) + " for switch " + String(id));
       if (isPWM) {
         analogWrite(outputPin, 0);
       } else {
@@ -1348,7 +1356,7 @@ public:
   void SetSwitch(int switchNumber, bool state) override {
     if (!isValidSwitchId(switchNumber)) return;
     if (!switches[switchNumber].canWrite) {
-      LOG_DEBUG("ERROR: Switch " + String(switchNumber) + " is not writable");
+      LOG_ERROR("Switch " + String(switchNumber) + " (" + switches[switchNumber].name.c_str() + ") is not writable");
       return;
     }
     
@@ -1356,7 +1364,7 @@ public:
     switches[switchNumber].value = state ? switches[switchNumber].maxValue : switches[switchNumber].minValue;
     applyOutput(switchNumber);
     
-    LOG_DEBUG("Switch " + String(switchNumber) + " set to: " + (state ? "true" : "false"));
+    LOG_INFO("Switch " + String(switchNumber) + " (" + switches[switchNumber].name.c_str() + ") set " + (state ? "ENABLED" : "DISABLED") + " via API");
   }
   
   /**
@@ -1378,11 +1386,11 @@ public:
   void SetSwitchValue(int switchNumber, double value) override {
     if (!isValidSwitchId(switchNumber)) return;
     if (switches[switchNumber].type == SwitchType::DewHeaterOutputPct) {
-      LOG_DEBUG("ERROR: Switch " + String(switchNumber) + " is read-only (heater output %)");
+      LOG_ERROR("Switch " + String(switchNumber) + " (" + switches[switchNumber].name.c_str() + ") is read-only (heater output %)");
       return;
     }
     if (!switches[switchNumber].canWrite) {
-      LOG_DEBUG("ERROR: Switch " + String(switchNumber) + " is not writable");
+      LOG_ERROR("Switch " + String(switchNumber) + " (" + switches[switchNumber].name.c_str() + ") is not writable");
       return;
     }
 
@@ -1391,7 +1399,7 @@ public:
       switches[switchNumber].enabled = turnOn;
       switches[switchNumber].value = turnOn ? switches[switchNumber].maxValue : switches[switchNumber].minValue;
       applyOutput(switchNumber);
-      LOG_DEBUG("DewHeater " + String(switchNumber) + " value interpreted as state: " + (turnOn ? "ON" : "OFF"));
+      LOG_INFO("DewHeater " + String(switchNumber) + " (" + switches[switchNumber].name.c_str() + ") set " + (turnOn ? "ON" : "OFF") + " via API (value=" + String(value) + ")");
       return;
     }
     
@@ -1402,7 +1410,7 @@ public:
     switches[switchNumber].value = value;
     applyOutput(switchNumber);
     
-    LOG_DEBUG("Switch " + String(switchNumber) + " value set to: " + String(value));
+    LOG_INFO("Switch " + String(switchNumber) + " (" + switches[switchNumber].name.c_str() + ") value set to " + String(value) + " via API");
   }
   
   // ==================== Public Helper Methods ====================
@@ -1776,7 +1784,12 @@ public:
         int np = (pin >= 0 && pin <= 16) ? pin : -1;
         if (np != switches[i].tempInputPin) {
           switches[i].tempInputPin = np;
-          if (np >= 0) pinMode(np, INPUT);
+          if (np >= 0) {
+            pinMode(np, INPUT);
+            LOG_INFO("Pin mode set for temperature input pin %d", np);
+          } else {
+            LOG_INFO("Temperature input pin disabled for switch %d", i);
+          }
         }
         thisChange = true;
       }
@@ -1921,20 +1934,33 @@ public:
       if (pin < 0 || pin > 16) pin = -1;
       if (pin != switches[idx].outputPin) {
         switches[idx].outputPin = pin;
-        if (pin >= 0) { pinMode(pin, OUTPUT); applyOutput(idx); }
+        if (pin >= 0) { 
+          pinMode(pin, OUTPUT); 
+          LOG_INFO("Pin mode set for output pin %d", pin);
+          applyOutput(idx); }
       }
       changed = true;
     }
     if (request->hasParam("swtempin_" + si, true)) {
       int pin = request->getParam("swtempin_" + si, true)->value().toInt();
       if (pin < 0 || pin > 16) pin = -1;
-      if (pin != switches[idx].tempInputPin) { switches[idx].tempInputPin = pin; if (pin >= 0) pinMode(pin, INPUT); }
+      if (pin != switches[idx].tempInputPin) { switches[idx].tempInputPin = pin; if (pin >= 0) 
+        pinMode(pin, INPUT);
+        LOG_INFO("Pin mode set for temperature input pin %d", pin);
+       } else if (pin < 0) {
+        LOG_INFO("Temperature input pin disabled for switch %d", idx);
+      }
       changed = true;
     }
     if (request->hasParam("swheatertemp_" + si, true)) {
       int pin = request->getParam("swheatertemp_" + si, true)->value().toInt();
       if (pin < 0 || pin > 16) pin = -1;
-      if (pin != switches[idx].heaterTempPin) { switches[idx].heaterTempPin = pin; if (pin >= 0) pinMode(pin, INPUT); }
+      if (pin != switches[idx].heaterTempPin) { switches[idx].heaterTempPin = pin; if (pin >= 0) 
+        pinMode(pin, INPUT); 
+        LOG_INFO("Pin mode set for heater temperature input pin %d", pin);
+       } else if (pin < 0) {
+        LOG_INFO("Heater temperature input pin disabled for switch %d", idx);
+      }
       changed = true;
     }
     if (changed) {
@@ -1971,6 +1997,7 @@ public:
       if (request->hasParam("led_page", true)) {
         ledDisabled = request->hasParam("led_disable", true);
         pinMode(2, OUTPUT);
+        LOG_INFO("Setting LED state: GPIO2 set to %s", ledDisabled ? "HIGH (LED OFF)" : "LOW (LED ON)");
         digitalWrite(2, ledDisabled ? HIGH : LOW);
         scheduleSaveAllToEEPROM(); // persist LED state across reboots
         String ledMessage = ledDisabled ? "LED disabled (GPIO2 set HIGH)." : "LED enabled (GPIO2 set LOW).";
@@ -2055,6 +2082,9 @@ public:
             switches[i].tempInputPin = pin;
             if (pin >= 0) {
               pinMode(pin, INPUT);
+              LOG_INFO("Pin mode set for temperature input pin %d at switch %d", pin, i);
+            } else {
+              LOG_INFO("Temperature input pin disabled for switch %d", i);
             }
           }
 
@@ -2184,6 +2214,7 @@ public:
             switches[i].outputPin = pin;
             if (pin >= 0) {
               pinMode(pin, OUTPUT);
+              LOG_INFO("Pin mode set for output pin %d at switch %d", pin, i);
               applyOutput(i);
             }
           }
@@ -2199,6 +2230,7 @@ public:
             switches[i].tempInputPin = pin;
             if (pin >= 0) {
               pinMode(pin, INPUT);
+              LOG_INFO("Pin mode set for temperature input pin %d at switch %d", pin, i);
             }
           }
         }
@@ -2213,6 +2245,7 @@ public:
             switches[i].heaterTempPin = pin;
             if (pin >= 0) {
               pinMode(pin, INPUT);
+              LOG_INFO("Pin mode set for heater temperature input pin %d at switch %d", pin, i);
             }
           }
         }
@@ -2279,6 +2312,7 @@ public:
       response->print("' required>");
       response->print("<label>Password</label><input type='password' name='wifi_password' maxlength='63' value='' placeholder='Leave empty to keep current'>");
       response->print("<p><input type='submit' value='Save WiFi Settings'></p></form>");
+      // ---- LED section ----
       response->print("<h2>LED</h2><form method='POST' action='"); response->print(setupUrl); response->print("'>");
       response->print("<input type='hidden' name='led_page' value='1'>");
       response->print(ledDisabled

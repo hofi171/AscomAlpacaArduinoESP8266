@@ -33,6 +33,7 @@
     "/^& \"C:\\\\Users\\\\phofmann_adm\\\\\\.platformio\\\\penv\\\\Scripts\\\\pio\\.exe\" run 2>&1 \\| Select-Object -Last 60$/": {
       "approve": true,
       "matchCommandLine": true
-    }
+    },
+    "Set-Content": true
   }
 }
