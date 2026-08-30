@@ -123,7 +123,7 @@ void setup()
     LOG_INFO("Done management->registerDevice(...) dome;");
 
     LOG_INFO("Start safetyMonitor = new ArduinoSafetyMonitor(...);");
-    safetyMonitor = new ArduinoSafetyMonitor(HOSTNAME, 0, "Arduino Alpaca Safety Monitor based on ESP8266", server);
+    safetyMonitor = new ArduinoSafetyMonitor(HOSTNAME, 0, "Arduino Alpaca Safety Monitor based on ESP8266", server, -1, dome); // Pass dome pointer to safety monitor
     LOG_INFO("Done safetyMonitor = new ArduinoSafetyMonitor(...);");
 
     LOG_INFO("Start management->registerDevice(...) safetyMonitor;");
@@ -173,7 +173,7 @@ void loop(void)
 {
  dome->update(); // Update dome state (handles movement and shutter control)
  safetyMonitor->update(); // Update safety monitor state (handles safety checks)
- 
+
   // Handle Alpaca Discovery requests
   if (discovery != nullptr)
   {

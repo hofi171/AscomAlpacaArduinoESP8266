@@ -93,6 +93,7 @@ private:
   static const int EEPROM_DOME_SHUTTER_POWER_ON_PIN_ADDR = 278;
   static const int EEPROM_DOME_SHUTTER_DIR_PIN_ADDR = 282;
   static const int EEPROM_DOME_SHUTTER_POLARITY_ADDR = 286; // packed nibble: bits 0-3 = openDrive/closeDrive/powerOn/direction low-active
+  static const int EEPROM_DOME_SHUTTER_STATE_ADDR = 290;
   static const uint16_t EEPROM_DOME_VALID_MARKER = 0xD06F;
 
   static double normalizeAzimuth(double azimuth) {
@@ -110,6 +111,26 @@ private:
       case SHUTTER_ERROR: return "Error";
       default: return "Unknown";
     }
+  }
+
+  void saveShutterStateToEEPROM() {
+    if (shutterStatus != SHUTTER_OPEN && shutterStatus != SHUTTER_CLOSED) return;
+
+    EEPROM.write(EEPROM_DOME_SHUTTER_STATE_ADDR, static_cast<uint8_t>(shutterStatus));
+    EEPROM.commit();
+  }
+
+  void loadShutterStateFromEEPROM() {
+    uint8_t storedState = EEPROM.read(EEPROM_DOME_SHUTTER_STATE_ADDR);
+
+    if (storedState == SHUTTER_OPEN || storedState == SHUTTER_CLOSED) {
+      shutterStatus = static_cast<ShutterState>(storedState);
+      LOG_INFO("Restored shutter state: " + String(shutterStateToText(shutterStatus)));
+      return;
+    }
+
+    shutterStatus = SHUTTER_ERROR;
+    LOG_WARN("Invalid shutter state in EEPROM, set to ERROR");
   }
 
   bool validateLoadedSettings(double loadedHomeAzimuth,
@@ -470,6 +491,8 @@ private:
    * @brief Update shutter state machine
    */
   void updateShutter() {
+    ShutterState previousShutterStatus = shutterStatus;
+
     if (shutterStatus == SHUTTER_OPENING || shutterStatus == SHUTTER_CLOSING) {
       unsigned long currentTime = millis();
 
@@ -558,6 +581,10 @@ private:
       } else if (openSensorActive && closeSensorActive) {
         shutterStatus = SHUTTER_ERROR;
       }
+    }
+
+    if (shutterStatus != previousShutterStatus) {
+      saveShutterStateToEEPROM();
     }
   }
   }
@@ -666,6 +693,7 @@ public:
       shutterCloseSensorLowActive(close_sensor_low_active),
       homeSensorLowActive(home_sensor_low_active) {
     loadSettingsFromEEPROM();
+    loadShutterStateFromEEPROM();
     applyPinConfiguration();
     
     LOG_INFO("ArduinoDome created - Shutter: " + String(has_shutter ? "Yes" : "No") + " Altitude: " + String(has_altitude_control ? "Yes" : "No"));
