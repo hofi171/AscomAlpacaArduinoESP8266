@@ -493,7 +493,7 @@ private:
   void updateShutter() {
     ShutterState previousShutterStatus = shutterStatus;
 
-    if (shutterStatus == SHUTTER_OPENING || shutterStatus == SHUTTER_CLOSING) {
+   // if (shutterStatus == SHUTTER_OPENING || shutterStatus == SHUTTER_CLOSING) {
       unsigned long currentTime = millis();
 
       // Check if shutter operation is complete
@@ -586,7 +586,7 @@ private:
     if (shutterStatus != previousShutterStatus) {
       saveShutterStateToEEPROM();
     }
-  }
+  
   }
   
   /**

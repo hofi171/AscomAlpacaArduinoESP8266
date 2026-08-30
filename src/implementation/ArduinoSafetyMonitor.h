@@ -34,6 +34,7 @@ private:
   bool weatherSafe;
   bool powerSafe;
   bool hardwareSafe;
+  bool domeSafe;
   bool hasDomeToCheck;
   
   AlpacaDeviceDome *domeToCheck; // Pointer to the dome device to check (if applicable)
@@ -78,9 +79,10 @@ private:
     weatherSafe = checkWeatherConditions();
     powerSafe = checkPowerStatus();
     hardwareSafe = sensorState;
-    
+    domeSafe = checkDome();
+
     // System is safe only if all conditions are met
-    return weatherSafe && powerSafe && hardwareSafe;
+    return weatherSafe && powerSafe && hardwareSafe && domeSafe;
   }
 
     /**
@@ -185,6 +187,7 @@ public:
   bool IsWeatherSafe()  const { return weatherSafe; }
   bool IsPowerSafe()    const { return powerSafe; }
   bool IsHardwareSafe() const { return hardwareSafe; }
+  bool IsDomeSafe()  const { return domeSafe; }
 
   /**
    * @brief Setup page — displays current safety state and allows pin configuration
@@ -244,6 +247,7 @@ public:
     }
 
     checkSensors(); // refresh state before rendering
+    bool domeSafe = checkDome();
 
     String html = "<!DOCTYPE html><html><head>";
     html += "<meta charset='UTF-8'>";
@@ -279,6 +283,8 @@ public:
     html += "<div class='info-row'><span class='info-label'>Weather:</span><span>" + safeStr(weatherSafe) + "</span></div>";
     html += "<div class='info-row'><span class='info-label'>Power:</span><span>" + safeStr(powerSafe) + "</span></div>";
     html += "<div class='info-row'><span class='info-label'>Hardware (pin " + String(safetySensorPin) + "):</span><span>" + safeStr(hardwareSafe) + "</span></div>";
+        html += "<div class='info-row'><span class='info-label'>Dome:</span><span>" +
+          (hasDomeToCheck ? safeStr(domeSafe) : String("Not configured")) + "</span></div>";
     html += "</div>";
 
     // WiFi status section
@@ -322,21 +328,6 @@ public:
 
     request->send(200, "text/html", html);
   }
-
-  
-  // ==================== Additional Methods ====================
-  
-  /**
-   * @brief Update Safety Monitor state
-   * Call this periodically from loop() to handle safety checks
-   */
-  void update() {
-    checkWeatherConditions();
-    checkPowerStatus();
-    checkSensors();
-    checkDome(); // Optional: if you have a dome object to check
-  }
-
 
 };
 

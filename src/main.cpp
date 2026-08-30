@@ -172,7 +172,6 @@ void setup()
 void loop(void)
 {
  dome->update(); // Update dome state (handles movement and shutter control)
- safetyMonitor->update(); // Update safety monitor state (handles safety checks)
 
   // Handle Alpaca Discovery requests
   if (discovery != nullptr)
