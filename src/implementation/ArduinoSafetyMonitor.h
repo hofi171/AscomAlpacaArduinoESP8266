@@ -34,7 +34,11 @@ private:
   bool weatherSafe;
   bool powerSafe;
   bool hardwareSafe;
+  bool hasDomeToCheck;
   
+  AlpacaDeviceDome *domeToCheck; // Pointer to the dome device to check (if applicable)
+
+
   /**
    * @brief Save safetySensorPin to EEPROM
    */
@@ -78,6 +82,29 @@ private:
     // System is safe only if all conditions are met
     return weatherSafe && powerSafe && hardwareSafe;
   }
+
+    /**
+   * @brief Check all Dome State safety conditions
+   * @return true if all conditions are safe
+   */
+  bool checkDome() {
+
+    if(hasDomeToCheck) {
+      if(domeToCheck == nullptr) {
+        LOG_WARN("Dome pointer is null, cannot check dome safety");
+        return false;
+      }else {
+        LOG_DEBUG("Checking dome safety conditions for dome: " + String(domeToCheck->GetDeviceName()));
+        if( domeToCheck->GetShutterStatus() == SHUTTER_ERROR) {
+          LOG_WARN("Dome shutter is in error state, unsafe to operate");
+          return false;
+        }
+      }
+
+    }
+
+    return true;
+  }
   
   /**
    * @brief Check weather conditions
@@ -115,12 +142,14 @@ public:
    * @param sensorPin GPIO pin number for safety sensor (-1 to disable)
    */
   ArduinoSafetyMonitor(String devicename, int devicenumber, String description, 
-                       AsyncWebServer &server, int sensorPin = -1)
+                       AsyncWebServer &server, int sensorPin = -1, AlpacaDeviceDome *dome = nullptr)
     : AlpacaDeviceSafetyMonitor(devicename, devicenumber, description, server, true),
       safetySensorPin(sensorPin),
       weatherSafe(true),
       powerSafe(true),
-      hardwareSafe(true) {
+      hardwareSafe(true),
+      hasDomeToCheck(dome != nullptr),
+      domeToCheck(dome) {
     
     // Load WiFi config from EEPROM
     wifiConfig.loadFromEEPROM();
@@ -293,6 +322,22 @@ public:
 
     request->send(200, "text/html", html);
   }
+
+  
+  // ==================== Additional Methods ====================
+  
+  /**
+   * @brief Update Safety Monitor state
+   * Call this periodically from loop() to handle safety checks
+   */
+  void update() {
+    checkWeatherConditions();
+    checkPowerStatus();
+    checkSensors();
+    checkDome(); // Optional: if you have a dome object to check
+  }
+
+
 };
 
 #endif /* ARDUINO_SAFETY_MONITOR_H */

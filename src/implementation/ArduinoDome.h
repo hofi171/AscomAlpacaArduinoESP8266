@@ -459,7 +459,7 @@ private:
       if (azimuthEnablePin >= 0) {
         digitalWrite(azimuthEnablePin, HIGH); // Disable motor
       }
-      LOG_DEBUG("Dome slew complete - Az: " + String(currentAzimuth) + " Alt: " + String(currentAltitude));
+      LOG_INFO("Dome slew complete - Az: " + String(currentAzimuth) + " Alt: " + String(currentAltitude));
       
       // Update home/park status
       updatePositionStatus();
@@ -475,7 +475,17 @@ private:
 
       // Check if shutter operation is complete
       if(hasShutterSensors) {
-        if (shutterStatus == SHUTTER_OPENING) {
+
+        switch (shutterStatus)
+        {
+        case SHUTTER_OPEN:
+          LOG_INFO("Shutter is OPEN, checking open sensor");
+          if (digitalRead(shutterOpenSensorPin) != (shutterOpenSensorLowActive ? LOW : HIGH)) {
+            shutterStatus = SHUTTER_ERROR;
+            LOG_ERROR("Shutter OPEN sensor not active, error");
+          }
+          break;
+        case SHUTTER_OPENING:
           LOG_INFO("Shutter is OPENING, checking open sensor");
           if (digitalRead(shutterOpenSensorPin) == (shutterOpenSensorLowActive ? LOW : HIGH)) {
             shutterStatus = SHUTTER_OPEN;
@@ -487,8 +497,9 @@ private:
               digitalWrite(shutterOpenDrivePin, shutterOpenDriveLowActive ? HIGH : LOW);
             }
           }
-        } else if (shutterStatus == SHUTTER_CLOSING) {
-          LOG_INFO("Shutter is CLOSING, checking close sensor");
+          break;
+        case SHUTTER_CLOSING:
+        LOG_INFO("Shutter is CLOSING, checking close sensor");
           if (digitalRead(shutterCloseSensorPin) == (shutterCloseSensorLowActive ? LOW : HIGH)) {
             shutterStatus = SHUTTER_CLOSED;
             LOG_INFO("Shutter is now CLOSED (sensor)");
@@ -499,16 +510,30 @@ private:
               digitalWrite(shutterCloseDrivePin, shutterCloseDriveLowActive ? HIGH : LOW);
             }
           }
+          case SHUTTER_CLOSED:
+            LOG_INFO("Shutter is CLOSED, checking close sensor");
+            if (digitalRead(shutterCloseSensorPin) != (shutterCloseSensorLowActive ? LOW : HIGH)) {
+              shutterStatus = SHUTTER_ERROR;
+              LOG_ERROR("Shutter CLOSE sensor not active, error");
+            }
+            break;
+          case SHUTTER_ERROR:
+            LOG_ERROR("Shutter is in ERROR state, manual intervention required");
+            break;
+          default:
+            LOG_ERROR("Unknown shutter state - set to ERROR");
+            shutterStatus = SHUTTER_ERROR;
+            break;
         }
       } else { // Fallback to time-based shutter control if no sensors
       if (currentTime - shutterStartTime >= shutterDuration) {
         // Shutter operation complete
         if (shutterStatus == SHUTTER_OPENING) {
           shutterStatus = SHUTTER_OPEN;
-          LOG_DEBUG("Shutter is now OPEN");
+          LOG_INFO("Shutter is now OPEN");
         } else {
           shutterStatus = SHUTTER_CLOSED;
-          LOG_DEBUG("Shutter is now CLOSED");
+          LOG_INFO("Shutter is now CLOSED");
         }
         
         // Turn off motor
@@ -562,7 +587,7 @@ private:
       if (digitalRead(homeSensorPin) == (homeSensorLowActive ? LOW : HIGH)) {
         atHome = true;
         currentAzimuth = homeAzimuth;
-        LOG_DEBUG("Home sensor triggered");
+        LOG_INFO("Home sensor triggered");
       }
     }
   }
@@ -643,7 +668,7 @@ public:
     loadSettingsFromEEPROM();
     applyPinConfiguration();
     
-    LOG_DEBUG("ArduinoDome created - Shutter: " + String(has_shutter ? "Yes" : "No") + " Altitude: " + String(has_altitude_control ? "Yes" : "No"));
+    LOG_INFO("ArduinoDome created - Shutter: " + String(has_shutter ? "Yes" : "No") + " Altitude: " + String(has_altitude_control ? "Yes" : "No"));
   }
   
   // ==================== IDome Interface Implementation ====================
@@ -710,7 +735,7 @@ public:
   
   void SetSlaved(bool slaved) override {
     this->slaved = slaved;
-    LOG_DEBUG("Dome slaved to telescope: " + String(slaved ? "Yes" : "No"));
+    LOG_INFO("Dome slaved to telescope: " + String(slaved ? "Yes" : "No"));
     
     // In a real implementation with slaving:
     // - Subscribe to telescope position updates
@@ -719,7 +744,7 @@ public:
   }
   
   void AbortSlew() override {
-    LOG_DEBUG("Abort slew command received");
+    LOG_INFO("Abort slew command received");
     targetAzimuth = currentAzimuth;
     targetAltitude = currentAltitude;
     isSlewing = false;
@@ -735,22 +760,22 @@ public:
       if (shutterDirectionPin >= 0) digitalWrite(shutterDirectionPin, LOW);
       if (shutterOpenDrivePin >= 0) digitalWrite(shutterOpenDrivePin, shutterOpenDriveLowActive ? HIGH : LOW);
       if (shutterCloseDrivePin >= 0) digitalWrite(shutterCloseDrivePin, shutterCloseDriveLowActive ? HIGH : LOW);
-      LOG_DEBUG("Shutter movement aborted - state set to ERROR");
+      LOG_INFO("Shutter movement aborted - state set to ERROR");
     }
   }
   
   void CloseShutter() override {
     if (!canSetShutter) {
-      LOG_DEBUG("Shutter control not available");
+      LOG_INFO("Shutter control not available");
       return;
     }
     
     if (shutterStatus == SHUTTER_CLOSED) {
-      LOG_DEBUG("Shutter already closed");
+      LOG_INFO("Shutter already closed");
       return;
     }
     
-    LOG_DEBUG("Closing shutter");
+    LOG_INFO("Closing shutter");
     shutterStatus = SHUTTER_CLOSING;
     shutterStartTime = millis();
     
@@ -765,11 +790,11 @@ public:
   
   void FindHome() override {
     if (!canFindHome) {
-      LOG_DEBUG("Find home not available");
+      LOG_INFO("Find home not available");
       return;
     }
     
-    LOG_DEBUG("Finding home position");
+    LOG_INFO("Finding home position");
     
     // In a real implementation:
     // - Start rotating dome slowly
@@ -783,16 +808,16 @@ public:
   
   void OpenShutter() override {
     if (!canSetShutter) {
-      LOG_DEBUG("Shutter control not available");
+      LOG_INFO("Shutter control not available");
       return;
     }
     
     if (shutterStatus == SHUTTER_OPEN) {
-      LOG_DEBUG("Shutter already open");
+      LOG_INFO("Shutter already open");
       return;
     }
     
-    LOG_DEBUG("Opening shutter");
+    LOG_INFO("Opening shutter");
     shutterStatus = SHUTTER_OPENING;
     shutterStartTime = millis();
     
@@ -807,11 +832,11 @@ public:
   
   void Park() override {
     if (!canPark) {
-      LOG_DEBUG("Park not available");
+      LOG_INFO("Park not available");
       return;
     }
     
-    LOG_DEBUG("Parking dome at Az: " + String(parkAzimuth) + " Alt: " + String(parkAltitude));
+    LOG_INFO("Parking dome at Az: " + String(parkAzimuth) + " Alt: " + String(parkAltitude));
     
     targetAzimuth = parkAzimuth;
     targetAltitude = parkAltitude;
@@ -825,28 +850,28 @@ public:
   
   void SetPark() override {
     if (!canSetPark) {
-      LOG_DEBUG("Set park not available");
+      LOG_INFO("Set park not available");
       return;
     }
     
     parkAzimuth = currentAzimuth;
     parkAltitude = currentAltitude;
     saveSettingsToEEPROM();
-    LOG_DEBUG("Park position set to Az: " + String(parkAzimuth) + " Alt: " + String(parkAltitude));
+    LOG_INFO("Park position set to Az: " + String(parkAzimuth) + " Alt: " + String(parkAltitude));
   }
   
   void SlewToAltitude(double altitude) override {
     if (!canSetAltitude) {
-      LOG_DEBUG("Altitude control not available");
+      LOG_INFO("Altitude control not available");
       return;
     }
     
     if (altitude < 0.0 || altitude > 90.0) {
-      LOG_DEBUG("Invalid altitude: " + String(altitude) + " (valid range: 0-90)");
+      LOG_INFO("Invalid altitude: " + String(altitude) + " (valid range: 0-90)");
       return;
     }
     
-    LOG_DEBUG("Slewing to altitude: " + String(altitude));
+    LOG_INFO("Slewing to altitude: " + String(altitude));
     targetAltitude = altitude;
     isSlewing = true;
     lastUpdateTime = millis();
@@ -854,13 +879,13 @@ public:
   
   void SlewToAzimuth(double azimuth) override {
     if (!canSetAzimuth) {
-      LOG_DEBUG("Azimuth control not available");
+      LOG_INFO("Azimuth control not available");
       return;
     }
     
     azimuth = normalizeAzimuth(azimuth);
     
-    LOG_DEBUG("Slewing to azimuth: " + String(azimuth));
+    LOG_INFO("Slewing to azimuth: " + String(azimuth));
     targetAzimuth = azimuth;
     isSlewing = true;
     lastUpdateTime = millis();
@@ -872,13 +897,13 @@ public:
   
   void SyncToAzimuth(double azimuth) override {
     if (!canSyncAzimuth) {
-      LOG_DEBUG("Sync azimuth not available");
+      LOG_INFO("Sync azimuth not available");
       return;
     }
     
     azimuth = normalizeAzimuth(azimuth);
     
-    LOG_DEBUG("Syncing to azimuth: " + String(azimuth) + " (was: " + String(currentAzimuth) + ")");
+    LOG_INFO("Syncing to azimuth: " + String(azimuth) + " (was: " + String(currentAzimuth) + ")");
     currentAzimuth = azimuth;
     targetAzimuth = azimuth;
     
@@ -909,7 +934,7 @@ public:
 
     azimuthSpeed = degreesPerSecond;
     saveSettingsToEEPROM();
-    LOG_DEBUG("Azimuth speed set to: " + String(azimuthSpeed) + " deg/sec");
+    LOG_INFO("Azimuth speed set to: " + String(azimuthSpeed) + " deg/sec");
   }
   
   /**
@@ -924,7 +949,7 @@ public:
 
     altitudeSpeed = degreesPerSecond;
     saveSettingsToEEPROM();
-    LOG_DEBUG("Altitude speed set to: " + String(altitudeSpeed) + " deg/sec");
+    LOG_INFO("Altitude speed set to: " + String(altitudeSpeed) + " deg/sec");
   }
   
   /**
@@ -939,14 +964,14 @@ public:
 
     shutterDuration = durationMs;
     saveSettingsToEEPROM();
-    LOG_DEBUG("Shutter duration set to: " + String(shutterDuration) + " ms");
+    LOG_INFO("Shutter duration set to: " + String(shutterDuration) + " ms");
   }
 
   void setHomeAzimuth(double azimuth) {
     homeAzimuth = normalizeAzimuth(azimuth);
     updatePositionStatus();
     saveSettingsToEEPROM();
-    LOG_DEBUG("Home azimuth set to: " + String(homeAzimuth));
+    LOG_INFO("Home azimuth set to: " + String(homeAzimuth));
   }
 
   void setParkPosition(double azimuth, double altitude) {
@@ -959,7 +984,7 @@ public:
     parkAltitude = altitude;
     updatePositionStatus();
     saveSettingsToEEPROM();
-    LOG_DEBUG("Park position set to Az: " + String(parkAzimuth) + " Alt: " + String(parkAltitude));
+    LOG_INFO("Park position set to Az: " + String(parkAzimuth) + " Alt: " + String(parkAltitude));
   }
 
   void setCurrentPosition(double azimuth, double altitude) {
@@ -974,7 +999,7 @@ public:
     targetAltitude = currentAltitude;
     isSlewing = false;
     updatePositionStatus();
-    LOG_DEBUG("Current position set to Az: " + String(currentAzimuth) + " Alt: " + String(currentAltitude));
+    LOG_INFO("Current position set to Az: " + String(currentAzimuth) + " Alt: " + String(currentAltitude));
   }
 
   void setupHandler(AsyncWebServerRequest *request) override {
