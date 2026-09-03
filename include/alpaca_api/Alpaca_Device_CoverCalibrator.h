@@ -47,7 +47,7 @@ public:
    */
   AlpacaDeviceCoverCalibrator(String devicename, int devicenumber, String description,
                               AsyncWebServer &server)
-      : AplacaDevice(devicename, "covercalibrator", devicenumber, server) {
+      : AplacaDevice(devicename, "covercalibrator", devicenumber, server, true) {
     Description = description;
     registerHandlers(server);
     LOG_DEBUG("AlpacaDeviceCoverCalibrator created:", devicename);
@@ -234,7 +234,7 @@ public:
     JsonObject &root = jsonBuff.createObject();
     
     AlpacaResponseValueBuilder(root, clientIDInt, clientTransID, ++serverTransID,
-                              String((int)calibratorState), AlpacaError::Success, "");
+                              (int)calibratorState, AlpacaError::Success, "");
     
     root.printTo(message);
     LOG_DEBUG("calibratorStateHandler response:", message.c_str());
@@ -308,7 +308,7 @@ public:
     JsonObject &root = jsonBuff.createObject();
     
     AlpacaResponseValueBuilder(root, clientIDInt, clientTransID, ++serverTransID,
-                              String((int)coverState), AlpacaError::Success, "");
+                              (int)coverState, AlpacaError::Success, "");
     
     root.printTo(message);
     LOG_DEBUG("coverStateHandler response:", message.c_str());
@@ -345,7 +345,7 @@ public:
     JsonObject &root = jsonBuff.createObject();
     
     AlpacaResponseValueBuilder(root, clientIDInt, clientTransID, ++serverTransID,
-                              String(maxBrightness), AlpacaError::Success, "");
+                              maxBrightness, AlpacaError::Success, "");
     
     root.printTo(message);
     LOG_DEBUG("maxBrightnessHandler response:", message.c_str());
@@ -613,7 +613,7 @@ public:
     DynamicJsonBuffer jsonBuff(256);
     JsonObject &root = jsonBuff.createObject();
     AlpacaResponseValueBuilder(root, clientIDInt, clientTransID, ++serverTransID,
-                              DRIVER_VERSION, AlpacaError::Success, "");
+                              "1.0.0", AlpacaError::Success, "");
     root.printTo(message);
     request->send(200, "application/json", message);
   }

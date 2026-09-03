@@ -22,6 +22,7 @@
 // #include "Alpaca_Device_Focuser.h"
 #include "implementation/ArduinoDome.h"
 #include "implementation/ArduinoSafetyMonitor.h"
+#include "implementation/ArduinoCoverCalibrator.h"
 
 #define HOSTNAME "Arduino-Alpaca-Dome"
 
@@ -37,6 +38,7 @@ WiFiConfig wifiConfig; // WiFi configuration manager
 
 ArduinoDome *dome = nullptr;
 ArduinoSafetyMonitor *safetyMonitor = nullptr;
+ArduinoCoverCalibrator *coverCalibrator = nullptr;
 
 
 void setup()
@@ -129,6 +131,16 @@ void setup()
     LOG_INFO("Start management->registerDevice(...) safetyMonitor;");
     management->registerDevice(server, safetyMonitor->GetDeviceName(), safetyMonitor->GetDeviceType(), safetyMonitor->GetDeviceNumber(), safetyMonitor);
     LOG_INFO("Done management->registerDevice(...) safetyMonitor;");
+
+    LOG_INFO("Start coverCalibrator = new ArduinoCoverCalibrator(...);");
+    // Default initialization: relay on pin 12, servo on pin 13 (cover control), no sensors
+    // Use defaults for relay_pin=-1, cover_open_pin=-1, cover_close_pin=-1, relay_inverted=false, use_servo=false
+    coverCalibrator = new ArduinoCoverCalibrator(HOSTNAME, 0, "Arduino Alpaca Cover Calibrator based on ESP8266", server);
+    LOG_INFO("Done coverCalibrator = new ArduinoCoverCalibrator(...);");
+
+    LOG_INFO("Start management->registerDevice(...) coverCalibrator;");
+    management->registerDevice(server, coverCalibrator->GetDeviceName(), coverCalibrator->GetDeviceType(), coverCalibrator->GetDeviceNumber(), coverCalibrator);
+    LOG_INFO("Done management->registerDevice(...) coverCalibrator;");
   }
   catch (const std::exception &e)
   {
@@ -172,6 +184,7 @@ void setup()
 void loop(void)
 {
  dome->update(); // Update dome state (handles movement and shutter control)
+  coverCalibrator->update(); // Update cover calibrator state (handles cover and relay control)
 
   // Handle Alpaca Discovery requests
   if (discovery != nullptr)

@@ -74,6 +74,9 @@ private:
   bool shutterCloseSensorLowActive; // true = LOW means shutter is closed
   bool homeSensorLowActive;         // true = LOW means at home position
 
+  // Error state tracking
+  bool shutterErrorLogged;          // Flag to log error state only once
+
   // EEPROM storage
   static const int EEPROM_DOME_SETTINGS_VALID_ADDR = 200;
   static const int EEPROM_DOME_HOME_AZ_ADDR = 202;
@@ -541,7 +544,10 @@ private:
             }
             break;
           case SHUTTER_ERROR:
-            LOG_ERROR("Shutter is in ERROR state, manual intervention required");
+            if (!shutterErrorLogged) {
+              LOG_ERROR("Shutter is in ERROR state, manual intervention required");
+              shutterErrorLogged = true;
+            }
             break;
           default:
             LOG_ERROR("Unknown shutter state - set to ERROR");
@@ -584,6 +590,9 @@ private:
     }
 
     if (shutterStatus != previousShutterStatus) {
+      if (previousShutterStatus == SHUTTER_ERROR) {
+        shutterErrorLogged = false;  // Reset flag when leaving ERROR state
+      }
       saveShutterStateToEEPROM();
     }
   
@@ -691,7 +700,8 @@ public:
       shutterDirectionLowActive(direction_low_active),
       shutterOpenSensorLowActive(open_sensor_low_active),
       shutterCloseSensorLowActive(close_sensor_low_active),
-      homeSensorLowActive(home_sensor_low_active) {
+      homeSensorLowActive(home_sensor_low_active),
+      shutterErrorLogged(false) {
     loadSettingsFromEEPROM();
     loadShutterStateFromEEPROM();
     applyPinConfiguration();
