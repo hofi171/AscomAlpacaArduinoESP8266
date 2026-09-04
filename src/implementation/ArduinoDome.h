@@ -1184,305 +1184,151 @@ public:
       return;
     }
 
-    // --- GET ---
+    // --- GET --- Use String concatenation instead of AsyncResponseStream to avoid heap fragmentation
     String page = "";
     if (request->hasParam("page")) page = request->getParam("page")->value();
 
-    // Pre-allocate enough for the largest page so cbuf::resizeAdd() is never called.
-    // Multiple resizeAdd() cycles between requests fragment the heap and cause abort() on new char[].
-    AsyncResponseStream *response = request->beginResponseStream("text/html", 7000);
+    // Build entire HTML as String - simple and safe on ESP8266
+    String html = "<!DOCTYPE html><html><head>";
+    html += "<meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+    html += "<style>";
+    html += "body{font-family:Arial,sans-serif;margin:20px;background-color:#f0f0f0;}";
+    html += "h1{color:#333;}";
+    html += ".container{max-width:700px;margin:0 auto;background-color:white;padding:20px;border-radius:8px;}";
+    html += ".info-section{background-color:#e8f4f8;padding:15px;border-radius:5px;margin-bottom:20px;}";
+    html += ".form-section{background-color:#f9f9f9;padding:15px;border-radius:5px;margin-bottom:15px;}";
+    html += ".info-row{display:flex;justify-content:space-between;margin:8px 0;}";
+    html += ".info-label{font-weight:bold;color:#555;}";
+    html += ".info-value{color:#0066cc;}";
+    html += "h2{color:#555;font-size:1.2em;margin-top:0;}";
+    html += "label{display:block;margin:10px 0 5px 0;font-weight:bold;}";
+    html += "input[type='number'],input[type='text'],input[type='password']{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}";
+    html += "input[type='submit']{background-color:#0066cc;color:white;padding:10px 20px;border:none;border-radius:4px;cursor:pointer;margin-top:10px;}";
+    html += ".help-text{font-size:0.9em;color:#666;margin-top:5px;}";
+    html += ".nav{margin-bottom:20px;}";
+    html += ".nav a{display:inline-block;margin-right:8px;padding:6px 14px;background-color:#0066cc;color:white;text-decoration:none;border-radius:4px;font-size:0.9em;}";
+    html += ".nav a.active{background-color:#003d7a;}";
+    html += "</style>";
 
-    // Shared head / CSS (streamed directly — never held in one large String)
-    response->print("<!DOCTYPE html><html><head>");
-    response->print("<meta charset='UTF-8'>");
-    response->print("<meta name='viewport' content='width=device-width, initial-scale=1.0'>");
-    response->print("<style>");
-    response->print("body{font-family:Arial,sans-serif;margin:20px;background-color:#f0f0f0;}");
-    response->print("h1{color:#333;}");
-    response->print(".container{max-width:700px;margin:0 auto;background-color:white;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}");
-    response->print(".info-section{background-color:#e8f4f8;padding:15px;border-radius:5px;margin-bottom:20px;}");
-    response->print(".form-section{background-color:#f9f9f9;padding:15px;border-radius:5px;margin-bottom:15px;}");
-    response->print(".info-row{display:flex;justify-content:space-between;margin:8px 0;}");
-    response->print(".info-label{font-weight:bold;color:#555;}");
-    response->print(".info-value{color:#0066cc;}");
-    response->print("h2{color:#555;font-size:1.2em;margin-top:0;}");
-    response->print("label{display:block;margin:10px 0 5px 0;font-weight:bold;}");
-    response->print("input[type='number'],input[type='text'],input[type='password']{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}");
-    response->print("input[type='submit']{background-color:#0066cc;color:white;padding:10px 20px;border:none;border-radius:4px;cursor:pointer;margin-top:10px;}");
-    response->print("input[type='submit']:hover{background-color:#0052a3;}");
-    response->print(".help-text{font-size:0.9em;color:#666;margin-top:5px;}");
-    response->print(".nav{margin-bottom:20px;}");
-    response->print(".nav a{display:inline-block;margin-right:8px;padding:6px 14px;background-color:#0066cc;color:white;text-decoration:none;border-radius:4px;font-size:0.9em;}");
-    response->print(".nav a.active{background-color:#003d7a;}");
-    response->print(".nav a:hover{background-color:#0052a3;}");
-    response->print("</style>");
+    if      (page == "settings") html += "<title>Dome Settings</title>";
+    else if (page == "gpio")     html += "<title>GPIO Pins</title>";
+    else if (page == "polarity") html += "<title>Output Polarity</title>";
+    else if (page == "sensors")  html += "<title>Sensor Status</title>";
+    else                         html += "<title>Dome Status</title>";
+    html += "</head><body><div class='container'>";
 
-    // Page title
-    if      (page == "settings") response->print("<title>Dome Settings - ");
-    else if (page == "gpio")     response->print("<title>GPIO Pins - ");
-    else if (page == "polarity") response->print("<title>Output Polarity - ");
-    else if (page == "sensors")  response->print("<title>Sensor Status - ");
-    else                         response->print("<title>Dome Setup - ");
-    response->print(GetDeviceName());
-    response->print("</title></head><body><div class='container'>");
-
-    // Heading
-    response->print("<h1>Dome Setup - ");
-    response->print(GetDeviceName());
-    response->print("</h1>");
+    html += "<h1>Dome Setup</h1>";
 
     // Nav bar
-    response->print("<div class='nav'>");
-    response->print("<a href='"); response->print(baseUrl); response->print("'");
-    if (page == "") response->print(" class='active'");
-    response->print(">Status &amp; WiFi</a>");
-    response->print("<a href='"); response->print(baseUrl); response->print("?page=settings'");
-    if (page == "settings") response->print(" class='active'");
-    response->print(">Dome Settings</a>");
-    response->print("<a href='"); response->print(baseUrl); response->print("?page=gpio'");
-    if (page == "gpio") response->print(" class='active'");
-    response->print(">GPIO Pins</a>");
-    response->print("<a href='"); response->print(baseUrl); response->print("?page=polarity'");
-    if (page == "polarity") response->print(" class='active'");
-    response->print(">Output Polarity</a>");
-    response->print("<a href='"); response->print(baseUrl); response->print("?page=sensors'");
-    if (page == "sensors") response->print(" class='active'");
-    response->print(">Sensor Status</a>");
-    response->print("</div>");
+    html += "<div class='nav'>";
+    html += "<a href='" + baseUrl + "'";
+    if (page == "") html += " class='active'";
+    html += ">Status</a>";
+    html += "<a href='" + baseUrl + "?page=settings'";
+    if (page == "settings") html += " class='active'";
+    html += ">Settings</a>";
+    html += "<a href='" + baseUrl + "?page=gpio'";
+    if (page == "gpio") html += " class='active'";
+    html += ">GPIO</a>";
+    html += "<a href='" + baseUrl + "?page=polarity'";
+    if (page == "polarity") html += " class='active'";
+    html += ">Polarity</a>";
+    html += "</div>";
 
     if (page == "settings") {
-      response->print("<div class='form-section'><form method='POST' action='");
-      response->print(baseUrl); response->print("?page=settings'>");
-      response->print("<h2>Required Dome Settings</h2>");
-      response->print("<label for='home_azimuth'>Home Azimuth (&deg;):</label>");
-      response->print("<input type='number' id='home_azimuth' name='home_azimuth' min='0' max='359.99' step='0.01' value='"); response->print(String(homeAzimuth, 2)); response->print("' required>");
-      response->print("<label for='park_azimuth'>Park Azimuth (&deg;):</label>");
-      response->print("<input type='number' id='park_azimuth' name='park_azimuth' min='0' max='359.99' step='0.01' value='"); response->print(String(parkAzimuth, 2)); response->print("' required>");
-      response->print("<label for='park_altitude'>Park Altitude (&deg;):</label>");
-      response->print("<input type='number' id='park_altitude' name='park_altitude' min='0' max='90' step='0.01' value='"); response->print(String(parkAltitude, 2)); response->print("' required>");
-      response->print("<label for='azimuth_speed'>Azimuth Speed (&deg;/s):</label>");
-      response->print("<input type='number' id='azimuth_speed' name='azimuth_speed' min='0.1' max='60' step='0.1' value='"); response->print(String(azimuthSpeed, 2)); response->print("' required>");
-      response->print("<label for='altitude_speed'>Altitude Speed (&deg;/s):</label>");
-      response->print("<input type='number' id='altitude_speed' name='altitude_speed' min='0.1' max='30' step='0.1' value='"); response->print(String(altitudeSpeed, 2)); response->print("' required>");
-      response->print("<label for='shutter_duration'>Shutter Duration (ms):</label>");
-      response->print("<input type='number' id='shutter_duration' name='shutter_duration' min='1000' max='300000' step='100' value='"); response->print(shutterDuration); response->print("' required>");
-      response->print("<div class='help-text'>Stored in EEPROM and survive reboot.</div>");
-      response->print("<input type='submit' value='Save Dome Settings'>");
-      response->print("</form></div>");
+      html += "<div class='form-section'><form method='POST' action='" + baseUrl + "?page=settings'>";
+      html += "<h2>Dome Settings</h2>";
+      html += "<label>Home Azimuth (&deg;):</label>";
+      html += "<input type='number' name='home_azimuth' min='0' max='359.99' step='0.01' value='" + String(homeAzimuth, 2) + "' required>";
+      html += "<label>Park Azimuth (&deg;):</label>";
+      html += "<input type='number' name='park_azimuth' min='0' max='359.99' step='0.01' value='" + String(parkAzimuth, 2) + "' required>";
+      html += "<label>Park Altitude (&deg;):</label>";
+      html += "<input type='number' name='park_altitude' min='0' max='90' step='0.01' value='" + String(parkAltitude, 2) + "' required>";
+      html += "<label>Azimuth Speed (&deg;/s):</label>";
+      html += "<input type='number' name='azimuth_speed' min='0.1' max='60' step='0.1' value='" + String(azimuthSpeed, 2) + "' required>";
+      html += "<label>Altitude Speed (&deg;/s):</label>";
+      html += "<input type='number' name='altitude_speed' min='0.1' max='30' step='0.1' value='" + String(altitudeSpeed, 2) + "' required>";
+      html += "<label>Shutter Duration (ms):</label>";
+      html += "<input type='number' name='shutter_duration' min='1000' max='300000' step='100' value='" + String(shutterDuration) + "' required>";
+      html += "<div class='help-text'>Stored in EEPROM</div>";
+      html += "<input type='submit' value='Save'>";
+      html += "</form></div>";
 
     } else if (page == "gpio") {
-      response->print("<div class='info-section'><h2>Current GPIO Configuration</h2>");
-      response->print("<div class='info-row'><span class='info-label'>Azimuth Step Pin:</span><span class='info-value'>"); response->print(azimuthStepPin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Azimuth Dir Pin:</span><span class='info-value'>"); response->print(azimuthDirPin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Azimuth Enable Pin:</span><span class='info-value'>"); response->print(azimuthEnablePin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Shutter Open Drive Pin:</span><span class='info-value'>"); response->print(shutterOpenDrivePin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Shutter Close Drive Pin:</span><span class='info-value'>"); response->print(shutterCloseDrivePin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Shutter Open Sensor Pin:</span><span class='info-value'>"); response->print(shutterOpenSensorPin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Shutter Close Sensor Pin:</span><span class='info-value'>"); response->print(shutterCloseSensorPin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Home Sensor Pin:</span><span class='info-value'>"); response->print(homeSensorPin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Shutter Power-On Pin:</span><span class='info-value'>"); response->print(shutterPowerOnPin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Shutter Direction Pin:</span><span class='info-value'>"); response->print(shutterDirectionPin); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Open Drive Polarity:</span><span class='info-value'>"); response->print(shutterOpenDriveLowActive ? "LOW active" : "HIGH active"); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Close Drive Polarity:</span><span class='info-value'>"); response->print(shutterCloseDriveLowActive ? "LOW active" : "HIGH active"); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Power-On Polarity:</span><span class='info-value'>"); response->print(shutterPowerOnLowActive ? "LOW active" : "HIGH active"); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Direction Polarity:</span><span class='info-value'>"); response->print(shutterDirectionLowActive ? "LOW = open" : "HIGH = open"); response->print("</span></div>");
-      response->print("</div>");
-
-      response->print("<div class='form-section'><form method='POST' action='");
-      response->print(baseUrl); response->print("?page=gpio'>");
-      response->print(F("<h2>GPIO Pin Configuration</h2>"));
-
-      // Azimuth pins
-      response->print(F("<label for='azimuth_step_pin'>Azimuth Step Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='azimuth_step_pin' name='azimuth_step_pin' min='-1' max='16' step='1' value='")); response->print(azimuthStepPin); response->print(F("' required>"));
-      response->print(F("<label for='azimuth_dir_pin'>Azimuth Direction Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='azimuth_dir_pin' name='azimuth_dir_pin' min='-1' max='16' step='1' value='")); response->print(azimuthDirPin); response->print(F("' required>"));
-      response->print(F("<label for='azimuth_enable_pin'>Azimuth Enable Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='azimuth_enable_pin' name='azimuth_enable_pin' min='-1' max='16' step='1' value='")); response->print(azimuthEnablePin); response->print(F("' required>"));
-      // Shutter drive pins
-      response->print(F("<label for='shutter_open_drive_pin'>Shutter Open Drive Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='shutter_open_drive_pin' name='shutter_open_drive_pin' min='-1' max='16' step='1' value='")); response->print(shutterOpenDrivePin); response->print(F("' required>"));
-      response->print(F("<label for='shutter_close_drive_pin'>Shutter Close Drive Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='shutter_close_drive_pin' name='shutter_close_drive_pin' min='-1' max='16' step='1' value='")); response->print(shutterCloseDrivePin); response->print(F("' required>"));
-      // Sensor pins
-      response->print(F("<label for='shutter_open_sensor_pin'>Shutter Open Sensor Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='shutter_open_sensor_pin' name='shutter_open_sensor_pin' min='-1' max='16' step='1' value='")); response->print(shutterOpenSensorPin); response->print(F("' required>"));
-      response->print(F("<label for='shutter_close_sensor_pin'>Shutter Close Sensor Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='shutter_close_sensor_pin' name='shutter_close_sensor_pin' min='-1' max='16' step='1' value='")); response->print(shutterCloseSensorPin); response->print(F("' required>"));
-      response->print(F("<label for='home_sensor_pin'>Home Sensor Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='home_sensor_pin' name='home_sensor_pin' min='-1' max='16' step='1' value='")); response->print(homeSensorPin); response->print(F("' required>"));
-      // Power / direction pins
-      response->print(F("<label for='shutter_power_on_pin'>Shutter Power-On Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='shutter_power_on_pin' name='shutter_power_on_pin' min='-1' max='16' step='1' value='")); response->print(shutterPowerOnPin); response->print(F("' required>"));
-      response->print(F("<label for='shutter_direction_pin'>Shutter Direction Pin (GPIO):</label>"));
-      response->print(F("<input type='number' id='shutter_direction_pin' name='shutter_direction_pin' min='-1' max='16' step='1' value='")); response->print(shutterDirectionPin); response->print(F("' required>"));
-
-      response->print(F("<div class='help-text'>Valid GPIOs: 0-5, 12-16 (pins 6-11 are reserved for SPI flash). Use -1 to disable. Active pins must be unique.<br>When <em>Shutter Power-On Pin</em> is set, the Direction pin controls open/close direction. Open/Close Drive pins are only used when Power-On Pin is -1.<br>Configure output polarity on the <a href='"));
-      response->print(baseUrl);
-      response->print(F("?page=polarity'>Output Polarity</a> page.</div>"));
-
-      response->print(F("<input type='submit' value='Save GPIO Pins'>"));
-      response->print(F("</form></div>"));
+      html += "<div class='form-section'><form method='POST' action='" + baseUrl + "?page=gpio'>";
+      html += "<h2>GPIO Configuration</h2>";
+      html += "<label>Azimuth Step:</label>";
+      html += "<input type='number' name='azimuth_step_pin' min='-1' max='16' value='" + String(azimuthStepPin) + "' required>";
+      html += "<label>Azimuth Direction:</label>";
+      html += "<input type='number' name='azimuth_dir_pin' min='-1' max='16' value='" + String(azimuthDirPin) + "' required>";
+      html += "<label>Azimuth Enable:</label>";
+      html += "<input type='number' name='azimuth_enable_pin' min='-1' max='16' value='" + String(azimuthEnablePin) + "' required>";
+      html += "<label>Shutter Open Drive:</label>";
+      html += "<input type='number' name='shutter_open_drive_pin' min='-1' max='16' value='" + String(shutterOpenDrivePin) + "' required>";
+      html += "<label>Shutter Close Drive:</label>";
+      html += "<input type='number' name='shutter_close_drive_pin' min='-1' max='16' value='" + String(shutterCloseDrivePin) + "' required>";
+      html += "<label>Open Sensor:</label>";
+      html += "<input type='number' name='shutter_open_sensor_pin' min='-1' max='16' value='" + String(shutterOpenSensorPin) + "' required>";
+      html += "<label>Close Sensor:</label>";
+      html += "<input type='number' name='shutter_close_sensor_pin' min='-1' max='16' value='" + String(shutterCloseSensorPin) + "' required>";
+      html += "<label>Home Sensor:</label>";
+      html += "<input type='number' name='home_sensor_pin' min='-1' max='16' value='" + String(homeSensorPin) + "' required>";
+      html += "<label>Power-On:</label>";
+      html += "<input type='number' name='shutter_power_on_pin' min='-1' max='16' value='" + String(shutterPowerOnPin) + "' required>";
+      html += "<label>Direction:</label>";
+      html += "<input type='number' name='shutter_direction_pin' min='-1' max='16' value='" + String(shutterDirectionPin) + "' required>";
+      html += "<div class='help-text'>Use -1 to disable</div>";
+      html += "<input type='submit' value='Save'>";
+      html += "</form></div>";
 
     } else if (page == "polarity") {
-      response->print(F("<div class='info-section'><h2>Current Polarity Settings</h2>"));
-      response->print(F("<div class='info-row'><span class='info-label'>Open Drive:</span><span class='info-value'>")); response->print(shutterOpenDriveLowActive ? "LOW active" : "HIGH active"); response->print(F("</span></div>"));
-      response->print(F("<div class='info-row'><span class='info-label'>Close Drive:</span><span class='info-value'>")); response->print(shutterCloseDriveLowActive ? "LOW active" : "HIGH active"); response->print(F("</span></div>"));
-      response->print(F("<div class='info-row'><span class='info-label'>Power-On:</span><span class='info-value'>")); response->print(shutterPowerOnLowActive ? "LOW active" : "HIGH active"); response->print(F("</span></div>"));
-      response->print(F("<div class='info-row'><span class='info-label'>Direction:</span><span class='info-value'>")); response->print(shutterDirectionLowActive ? "LOW = open" : "HIGH = open"); response->print(F("</span></div>"));
-      response->print(F("<div class='info-row'><span class='info-label'>Open Sensor:</span><span class='info-value'>")); response->print(shutterOpenSensorLowActive ? "LOW = open" : "HIGH = open"); response->print(F("</span></div>"));
-      response->print(F("<div class='info-row'><span class='info-label'>Close Sensor:</span><span class='info-value'>")); response->print(shutterCloseSensorLowActive ? "LOW = closed" : "HIGH = closed"); response->print(F("</span></div>"));
-      response->print(F("<div class='info-row'><span class='info-label'>Home Sensor:</span><span class='info-value'>")); response->print(homeSensorLowActive ? "LOW = home" : "HIGH = home"); response->print(F("</span></div>"));
-      response->print(F("</div>"));
-
-      response->print(F("<div class='form-section'><form method='POST' action='"));
-      response->print(baseUrl); response->print(F("?page=polarity'>"));
-      response->print(F("<h2>Output Polarity</h2>"));
-      response->print(F("<div class='help-text' style='margin-bottom:8px;'>Check if the signal is <strong>LOW&nbsp;=&nbsp;active</strong> (active-low / inverted logic)</div>"));
-
-      response->print(F("<b>Output pins</b><br>"));
-      response->print(F("<label style='font-weight:normal;display:block;margin:4px 0;'><input type='checkbox' name='open_drive_low_active' value='1'"));
-      if (shutterOpenDriveLowActive) response->print(F(" checked"));
-      response->print(F("> Shutter Open Drive (LOW active)</label>"));
-      response->print(F("<label style='font-weight:normal;display:block;margin:4px 0;'><input type='checkbox' name='close_drive_low_active' value='1'"));
-      if (shutterCloseDriveLowActive) response->print(F(" checked"));
-      response->print(F("> Shutter Close Drive (LOW active)</label>"));
-      response->print(F("<label style='font-weight:normal;display:block;margin:4px 0;'><input type='checkbox' name='power_on_low_active' value='1'"));
-      if (shutterPowerOnLowActive) response->print(F(" checked"));
-      response->print(F("> Shutter Power-On (LOW enables motor)</label>"));
-      response->print(F("<label style='font-weight:normal;display:block;margin:4px 0;'><input type='checkbox' name='direction_low_active' value='1'"));
-      if (shutterDirectionLowActive) response->print(F(" checked"));
-      response->print(F("> Shutter Direction (LOW = open)</label>"));
-
-      response->print(F("<br><b>Input sensors</b><br>"));
-      response->print(F("<label style='font-weight:normal;display:block;margin:4px 0;'><input type='checkbox' name='open_sensor_low_active' value='1'"));
-      if (shutterOpenSensorLowActive) response->print(F(" checked"));
-      response->print(F("> Shutter Open Sensor (LOW = open)</label>"));
-      response->print(F("<label style='font-weight:normal;display:block;margin:4px 0;'><input type='checkbox' name='close_sensor_low_active' value='1'"));
-      if (shutterCloseSensorLowActive) response->print(F(" checked"));
-      response->print(F("> Shutter Close Sensor (LOW = closed)</label>"));
-      response->print(F("<label style='font-weight:normal;display:block;margin:4px 0;'><input type='checkbox' name='home_sensor_low_active' value='1'"));
-      if (homeSensorLowActive) response->print(F(" checked"));
-      response->print(F("> Home Sensor (LOW = at home)</label>"));
-
-      response->print(F("<input type='hidden' name='polarity_update' value='1'>"));
-      response->print(F("<input type='submit' value='Save Polarity'>"));
-      response->print(F("</form></div>"));
-
-    } else if (page == "sensors") {
-      response->print(F("<div class='info-section'><h2>Live Sensor Values</h2>"));
-      response->print(F("<div class='info-row'><span class='info-label'>Current Shutter Status:</span><span class='info-value'>"));
-      response->print(shutterStateToText(shutterStatus));
-      response->print(F("</span></div>"));
-
-      bool openSensorConfigured = shutterOpenSensorPin >= 0;
-      bool closeSensorConfigured = shutterCloseSensorPin >= 0;
-      bool openSensorActive = false;
-      bool closeSensorActive = false;
-
-      response->print(F("<div class='info-row'><span class='info-label'>Shutter Open Sensor:</span><span class='info-value'>"));
-      if (openSensorConfigured) {
-        int rawValue = digitalRead(shutterOpenSensorPin);
-        openSensorActive = rawValue == (shutterOpenSensorLowActive ? LOW : HIGH);
-        response->print(rawValue == LOW ? "LOW" : "HIGH");
-        response->print(" (" );
-        response->print(openSensorActive ? "OPEN" : "inactive");
-        response->print(")");
-      } else {
-        response->print("Disabled");
-      }
-      response->print(F("</span></div>"));
-
-      response->print(F("<div class='info-row'><span class='info-label'>Shutter Close Sensor:</span><span class='info-value'>"));
-      if (closeSensorConfigured) {
-        int rawValue = digitalRead(shutterCloseSensorPin);
-        closeSensorActive = rawValue == (shutterCloseSensorLowActive ? LOW : HIGH);
-        response->print(rawValue == LOW ? "LOW" : "HIGH");
-        response->print(" (" );
-        response->print(closeSensorActive ? "CLOSED" : "inactive");
-        response->print(")");
-      } else {
-        response->print("Disabled");
-      }
-      response->print(F("</span></div>"));
-
-      response->print(F("<div class='info-row'><span class='info-label'>Home Sensor:</span><span class='info-value'>"));
-      if (homeSensorPin >= 0) {
-        int rawValue = digitalRead(homeSensorPin);
-        response->print(rawValue == LOW ? "LOW" : "HIGH");
-        response->print(" (" );
-        response->print(rawValue == (homeSensorLowActive ? LOW : HIGH) ? "HOME" : "inactive");
-        response->print(")");
-      } else {
-        response->print("Disabled");
-      }
-      response->print(F("</span></div></div>"));
-
-      response->print(F("<div class='info-section'><h2>Sensor Diagnostics</h2>"));
-      if (openSensorConfigured != closeSensorConfigured) {
-        response->print(F("<div class='info-row'><span class='info-label'>Sensor Error:</span><span class='info-value' style='color:#cc0000;'>Only one shutter end sensor is configured</span></div>"));
-      } else if (openSensorActive && closeSensorActive) {
-        response->print(F("<div class='info-row'><span class='info-label'>Sensor Error:</span><span class='info-value' style='color:#cc0000;'>Open and close sensors are active at the same time</span></div>"));
-      } else if (!openSensorConfigured && !closeSensorConfigured) {
-        response->print(F("<div class='info-row'><span class='info-label'>Sensor Error:</span><span class='info-value' style='color:#cc0000;'>No shutter end sensors are configured</span></div>"));
-      } else {
-        response->print(F("<div class='info-row'><span class='info-label'>Sensor Error:</span><span class='info-value' style='color:#008800;'>None</span></div>"));
-      }
-      response->print(F("</div>"));
-      response->print(F("<div class='help-text'>Values are read when this page is loaded. Sensor polarity is configured on the Output Polarity page.</div>"));
+      html += "<div class='form-section'><form method='POST' action='" + baseUrl + "?page=polarity'>";
+      html += "<h2>Output Polarity</h2>";
+      html += "<label><input type='checkbox' name='open_drive_low_active' value='1'" + String(shutterOpenDriveLowActive ? " checked" : "") + "> Open Drive LOW active</label>";
+      html += "<label><input type='checkbox' name='close_drive_low_active' value='1'" + String(shutterCloseDriveLowActive ? " checked" : "") + "> Close Drive LOW active</label>";
+      html += "<label><input type='checkbox' name='power_on_low_active' value='1'" + String(shutterPowerOnLowActive ? " checked" : "") + "> Power-On LOW active</label>";
+      html += "<label><input type='checkbox' name='direction_low_active' value='1'" + String(shutterDirectionLowActive ? " checked" : "") + "> Direction LOW=open</label>";
+      html += "<label><input type='checkbox' name='open_sensor_low_active' value='1'" + String(shutterOpenSensorLowActive ? " checked" : "") + "> Open Sensor LOW=open</label>";
+      html += "<label><input type='checkbox' name='close_sensor_low_active' value='1'" + String(shutterCloseSensorLowActive ? " checked" : "") + "> Close Sensor LOW=closed</label>";
+      html += "<label><input type='checkbox' name='home_sensor_low_active' value='1'" + String(homeSensorLowActive ? " checked" : "") + "> Home Sensor LOW=home</label>";
+      html += "<input type='hidden' name='polarity_update' value='1'>";
+      html += "<input type='submit' value='Save'>";
+      html += "</form></div>";
 
     } else {
-      // Main page: status, set current position, WiFi
-      response->print("<div class='info-section'><h2>Current Status</h2>");
-      response->print("<div class='info-row'><span class='info-label'>Azimuth:</span><span class='info-value'>"); response->print(String(currentAzimuth, 2)); response->print("&deg;</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Altitude:</span><span class='info-value'>"); response->print(String(currentAltitude, 2)); response->print("&deg;</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Slewing:</span><span class='info-value'>"); response->print(GetSlewing() ? "Yes" : "No"); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>At Home:</span><span class='info-value'>"); response->print(atHome ? "Yes" : "No"); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>At Park:</span><span class='info-value'>"); response->print(atPark ? "Yes" : "No"); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Shutter:</span><span class='info-value'>"); response->print(shutterStateToText(shutterStatus)); response->print("</span></div>");
-      response->print("<div class='info-row'><span class='info-label'>Shutter Control:</span><span class='info-value'>"); response->print(canSetShutter ? "Enabled" : "Disabled"); response->print("</span></div>");
-      response->print("</div>");
+      // Default status page - keep simple
+      html += "<div class='info-section'><h2>Current Status</h2>";
+      html += "<div class='info-row'><span class='info-label'>Azimuth:</span><span>" + String(currentAzimuth, 2) + "&deg;</span></div>";
+      html += "<div class='info-row'><span class='info-label'>Altitude:</span><span>" + String(currentAltitude, 2) + "&deg;</span></div>";
+      html += "<div class='info-row'><span class='info-label'>Slewing:</span><span>" + String(GetSlewing() ? "Yes" : "No") + "</span></div>";
+      html += "<div class='info-row'><span class='info-label'>Shutter:</span><span>" + String(shutterStateToText(shutterStatus)) + "</span></div>";
+      html += "</div>";
 
-      response->print("<div class='info-section'><h2>WiFi Status</h2>");
-      if (WiFi.getMode() == WIFI_AP) {
-        response->print("<div class='info-row'><span class='info-label'>Mode:</span><span class='info-value' style='color:#ff9900;'>Access Point (Fallback)</span></div>");
-        response->print("<div class='info-row'><span class='info-label'>AP SSID:</span><span class='info-value'>"); response->print(WiFi.softAPSSID()); response->print("</span></div>");
-        response->print("<div class='info-row'><span class='info-label'>AP IP:</span><span class='info-value'>"); response->print(WiFi.softAPIP().toString()); response->print("</span></div>");
-      } else {
-        response->print("<div class='info-row'><span class='info-label'>Mode:</span><span class='info-value' style='color:#00aa00;'>Station (Connected)</span></div>");
-        response->print("<div class='info-row'><span class='info-label'>SSID:</span><span class='info-value'>"); response->print(WiFi.SSID()); response->print("</span></div>");
-        response->print("<div class='info-row'><span class='info-label'>IP Address:</span><span class='info-value'>"); response->print(WiFi.localIP().toString()); response->print("</span></div>");
-        response->print("<div class='info-row'><span class='info-label'>Signal:</span><span class='info-value'>"); response->print(WiFi.RSSI()); response->print(" dBm</span></div>");
-      }
-      response->print("<div class='info-row'><span class='info-label'>Hostname:</span><span class='info-value'>"); response->print(WiFi.hostname()); response->print("</span></div>");
-      response->print("</div>");
+      html += "<div class='form-section'><form method='POST' action='" + baseUrl + "'>";
+      html += "<h2>Set Current Position</h2>";
+      html += "<label>Azimuth (&deg;):</label>";
+      html += "<input type='number' name='current_azimuth' min='0' max='359.99' step='0.01' value='" + String(currentAzimuth, 2) + "' required>";
+      html += "<label>Altitude (&deg;):</label>";
+      html += "<input type='number' name='current_altitude' min='0' max='90' step='0.01' value='" + String(currentAltitude, 2) + "' required>";
+      html += "<input type='submit' value='Set Position'>";
+      html += "</form></div>";
 
-      response->print("<div class='form-section'><form method='POST' action='"); response->print(baseUrl); response->print("'>");
-      response->print("<h2>Set Current Position</h2>");
-      response->print("<label for='current_azimuth'>Current Azimuth (&deg;):</label>");
-      response->print("<input type='number' id='current_azimuth' name='current_azimuth' min='0' max='359.99' step='0.01' value='"); response->print(String(currentAzimuth, 2)); response->print("' required>");
-      response->print("<label for='current_altitude'>Current Altitude (&deg;):</label>");
-      response->print("<input type='number' id='current_altitude' name='current_altitude' min='0' max='90' step='0.01' value='"); response->print(String(currentAltitude, 2)); response->print("' required>");
-      response->print("<div class='help-text'>Use this after manual dome movement or calibration.</div>");
-      response->print("<input type='submit' value='Set Current Position'>");
-      response->print("</form></div>");
-
-      response->print("<div class='form-section'><form method='POST' action='"); response->print(baseUrl); response->print("'>");
-      response->print("<h2>WiFi Configuration</h2>");
-      response->print("<label for='wifi_ssid'>WiFi SSID:</label>");
-      response->print("<input type='text' id='wifi_ssid' name='wifi_ssid' maxlength='31' value='"); response->print(wifiConfig.getSSID()); response->print("' required>");
-      response->print("<label for='wifi_password'>WiFi Password:</label>");
-      response->print("<input type='password' id='wifi_password' name='wifi_password' maxlength='63' value='' placeholder='Enter new password or leave empty'>");
-      response->print("<div class='help-text' style='color:#ff6600;'><strong>Warning:</strong> Device will restart after saving WiFi settings.</div>");
-      response->print("<input type='submit' value='Save WiFi Settings'>");
-      response->print("</form></div>");
+      html += "<div class='form-section'><form method='POST' action='" + baseUrl + "'>";
+      html += "<h2>WiFi</h2>";
+      html += "<label>SSID:</label>";
+      html += "<input type='text' name='wifi_ssid' maxlength='31' value='" + String(wifiConfig.getSSID()) + "' required>";
+      html += "<label>Password:</label>";
+      html += "<input type='password' name='wifi_password' maxlength='63' placeholder='Leave empty to keep current'>";
+      html += "<div class='help-text'>Device will restart after saving.</div>";
+      html += "<input type='submit' value='Save WiFi'>";
+      html += "</form></div>";
     }
 
-    response->print("<p style='text-align:center;color:#888;font-size:0.9em;margin-top:30px;'>");
-    response->print("<a href='/management/v1/description' style='color:#0066cc;text-decoration:none;'>Back to Management API</a>");
-    response->print("</p></div></body></html>");
+    html += "<p style='text-align:center;color:#888;font-size:0.9em;margin-top:30px;'>";
+    html += "<a href='/management/v1/description' style='color:#0066cc;text-decoration:none;'>Back to API</a>";
+    html += "</p></div></body></html>";
 
-    request->send(response);
+    request->send(200, "text/html", html);
   }
   
   /**

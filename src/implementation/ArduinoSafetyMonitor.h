@@ -3,7 +3,6 @@
 
 #include <EEPROM.h>
 #include <ESP8266WiFi.h>
-#include "WiFi_Config.h"
 #include "alpaca_api/Alpaca_Device_SafetyMonitor.h"
 
 /**
@@ -24,8 +23,8 @@ private:
   static const int SM_EEPROM_SENSOR_PIN_ADDR = 280;
   static const uint16_t SM_VALID_MARKER      = 0x5AFE;
 
-  // WiFi configuration manager
-  WiFiConfig wifiConfig;
+  // WiFi configuration manager - NOTE: WiFi settings are managed through Dome setup page
+  // WiFiConfig wifiConfig;
 
   // Example: Pin connected to a safety sensor
   int safetySensorPin;
@@ -153,9 +152,6 @@ public:
       hasDomeToCheck(dome != nullptr),
       domeToCheck(dome) {
     
-    // Load WiFi config from EEPROM
-    wifiConfig.loadFromEEPROM();
-
     // Load pin from EEPROM (overrides constructor argument if valid data exists)
     loadPinFromEEPROM();
 
@@ -190,7 +186,8 @@ public:
   bool IsDomeSafe()  const { return domeSafe; }
 
   /**
-   * @brief Setup page — displays current safety state and allows pin configuration
+   * @brief Setup page — displays sensor status only
+   * WiFi and network settings are configured through the Dome setup page
    */
   void setupHandler(AsyncWebServerRequest *request) override {
     // Handle POST
@@ -215,28 +212,6 @@ public:
         }
       }
 
-      if (request->hasParam("wifi_ssid", true) && request->hasParam("wifi_password", true)) {
-        String newSSID = request->getParam("wifi_ssid", true)->value();
-        String newPassword = request->getParam("wifi_password", true)->value();
-        if (newSSID.length() > 0) {
-          if (wifiConfig.saveToEEPROM(newSSID, newPassword)) {
-            message += "WiFi credentials saved for SSID: " + newSSID + "<br>";
-            message += "<strong>Please restart the device to connect to the new network.</strong><br>";
-            String html = "<html><head><meta http-equiv='refresh' content='3;url=/setup/v1/safetymonitor/" +
-                          String(GetDeviceNumber()) + "/setup'></head><body>";
-            html += "<h1>Safety Monitor Setup</h1><p>" + message + "</p><p>Restarting...</p></body></html>";
-            request->send(200, "text/html", html);
-            delay(500);
-            ESP.reset();
-            return;
-          } else {
-            message += "Error: Failed to save WiFi credentials.<br>";
-          }
-        } else {
-          message += "Error: WiFi SSID cannot be empty.<br>";
-        }
-      }
-
       String html = "<html><head><meta http-equiv='refresh' content='2;url=/setup/v1/safetymonitor/" +
                     String(GetDeviceNumber()) + "/setup'></head><body>";
       html += "<h1>Safety Monitor Setup</h1>";
@@ -246,8 +221,8 @@ public:
       return;
     }
 
+    // Prepare response for GET request - use simpler approach to avoid crashes
     checkSensors(); // refresh state before rendering
-    bool domeSafe = checkDome();
 
     String html = "<!DOCTYPE html><html><head>";
     html += "<meta charset='UTF-8'>";
@@ -255,75 +230,56 @@ public:
     html += "<title>Safety Monitor Setup</title>";
     html += "<style>";
     html += "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }";
-    html += "h1 { color: #333; }";
+    html += "h1 { color: #333; margin-bottom: 10px; }";
     html += ".container { max-width: 600px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }";
     html += ".info-section { background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin-bottom: 20px; }";
     html += ".form-section { background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 15px; }";
-    html += ".info-row { display: flex; justify-content: space-between; margin: 8px 0; }";
+    html += ".info-row { display: flex; justify-content: space-between; margin: 8px 0; padding: 8px 0; border-bottom: 1px solid #ddd; }";
     html += ".info-label { font-weight: bold; color: #555; }";
-    html += ".info-value { color: #0066cc; }";
-    html += ".safe    { color: #00aa00; }";
-    html += ".unsafe  { color: #cc0000; }";
-    html += "h2 { color: #555; font-size: 1.2em; margin-top: 0; }";
+    html += ".safe { color: #00aa00; font-weight: bold; }";
+    html += ".unsafe { color: #cc0000; font-weight: bold; }";
+    html += "h2 { color: #555; font-size: 1.1em; margin-top: 0; margin-bottom: 15px; }";
     html += "label { display: block; margin: 10px 0 5px 0; font-weight: bold; }";
-    html += "input[type='number'], input[type='text'], input[type='password'] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }";
-    html += "input[type='submit'] { background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin-top: 10px; }";
+    html += "input[type='number'] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; margin-bottom: 10px; }";
+    html += "input[type='submit'] { background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }";
     html += "input[type='submit']:hover { background-color: #0052a3; }";
-    html += ".help-text { font-size: 0.9em; color: #666; margin-top: 5px; }";
+    html += ".help-text { font-size: 0.85em; color: #666; margin-top: 5px; }";
+    html += ".link-section { background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #2196F3; }";
+    html += "a { color: #0066cc; text-decoration: none; }";
+    html += "a:hover { text-decoration: underline; }";
     html += "</style></head><body><div class='container'>";
 
-    html += "<h1>Safety Monitor - " + GetDeviceName() + "</h1>";
+    html += "<h1>Safety Monitor Setup</h1>";
+    html += "<p style='color: #666; font-size: 0.9em;'>Device: " + GetDeviceName() + "</p>";
 
-    auto safeStr = [](bool v) -> String { return v ? "<span class='safe'>Safe</span>" : "<span class='unsafe'>UNSAFE</span>"; };
-    bool overall = weatherSafe && powerSafe && hardwareSafe;
+    bool overall = weatherSafe && powerSafe && hardwareSafe && domeSafe;
 
-    // Status section
-    html += "<div class='info-section'><h2>Current Status</h2>";
-    html += "<div class='info-row'><span class='info-label'>Overall:</span><span>" + safeStr(overall) + "</span></div>";
-    html += "<div class='info-row'><span class='info-label'>Weather:</span><span>" + safeStr(weatherSafe) + "</span></div>";
-    html += "<div class='info-row'><span class='info-label'>Power:</span><span>" + safeStr(powerSafe) + "</span></div>";
-    html += "<div class='info-row'><span class='info-label'>Hardware (pin " + String(safetySensorPin) + "):</span><span>" + safeStr(hardwareSafe) + "</span></div>";
-        html += "<div class='info-row'><span class='info-label'>Dome:</span><span>" +
-          (hasDomeToCheck ? safeStr(domeSafe) : String("Not configured")) + "</span></div>";
-    html += "</div>";
-
-    // WiFi status section
-    html += "<div class='info-section'><h2>WiFi Status</h2>";
-    if (WiFi.getMode() == WIFI_AP) {
-      html += "<div class='info-row'><span class='info-label'>Mode:</span><span class='info-value' style='color: #ff9900;'>Access Point (Fallback)</span></div>";
-      html += "<div class='info-row'><span class='info-label'>AP SSID:</span><span class='info-value'>" + String(WiFi.softAPSSID()) + "</span></div>";
-      html += "<div class='info-row'><span class='info-label'>AP IP:</span><span class='info-value'>" + WiFi.softAPIP().toString() + "</span></div>";
-    } else {
-      html += "<div class='info-row'><span class='info-label'>Mode:</span><span class='info-value' style='color: #00aa00;'>Station (Connected)</span></div>";
-      html += "<div class='info-row'><span class='info-label'>SSID:</span><span class='info-value'>" + String(WiFi.SSID()) + "</span></div>";
-      html += "<div class='info-row'><span class='info-label'>IP Address:</span><span class='info-value'>" + WiFi.localIP().toString() + "</span></div>";
-      html += "<div class='info-row'><span class='info-label'>Signal:</span><span class='info-value'>" + String(WiFi.RSSI()) + " dBm</span></div>";
-    }
-    html += "<div class='info-row'><span class='info-label'>Hostname:</span><span class='info-value'>" + String(WiFi.hostname()) + "</span></div>";
+    // Status section - simple without dome access
+    html += "<div class='info-section'><h2>Sensor Status</h2>";
+    html += "<div class='info-row'><span class='info-label'>Overall:</span><span class='" + String(overall ? "safe" : "unsafe") + "'>" + String(overall ? "SAFE" : "UNSAFE") + "</span></div>";
+    html += "<div class='info-row'><span class='info-label'>Weather:</span><span class='" + String(weatherSafe ? "safe" : "unsafe") + "'>" + String(weatherSafe ? "SAFE" : "UNSAFE") + "</span></div>";
+    html += "<div class='info-row'><span class='info-label'>Power:</span><span class='" + String(powerSafe ? "safe" : "unsafe") + "'>" + String(powerSafe ? "SAFE" : "UNSAFE") + "</span></div>";
+    html += "<div class='info-row'><span class='info-label'>Hardware (pin " + String(safetySensorPin) + "):</span><span class='" + String(hardwareSafe ? "safe" : "unsafe") + "'>" + String(hardwareSafe ? "SAFE" : "UNSAFE") + "</span></div>";
+    html += "<div class='info-row'><span class='info-label'>Dome:</span><span class='" + String(domeSafe ? "safe" : "unsafe") + "'>" + String(domeSafe ? "SAFE" : "UNSAFE") + "</span></div>";
     html += "</div>";
 
     // Sensor pin configuration form
-    html += "<div class='form-section'><form method='POST' action='/setup/v1/safetymonitor/" + String(GetDeviceNumber()) + "/setup'>";
+    html += "<div class='form-section'><form method='POST'>";
     html += "<h2>Sensor Pin Configuration</h2>";
-    html += "<label for='sensor_pin'>Safety Sensor Pin (-1 = disabled):</label>";
+    html += "<label for='sensor_pin'>Safety Sensor Pin:</label>";
     html += "<input type='number' id='sensor_pin' name='sensor_pin' min='-1' max='16' value='" + String(safetySensorPin) + "' required>";
-    html += "<div class='help-text'>GPIO pin connected to the safety sensor (HIGH = safe). Use -1 to disable hardware sensor monitoring.</div>";
+    html += "<div class='help-text'>GPIO pin for safety sensor (use -1 to disable). HIGH = safe.</div>";
     html += "<input type='submit' value='Save Sensor Pin'>";
     html += "</form></div>";
 
-    // WiFi configuration form
-    html += "<div class='form-section'><form method='POST' action='/setup/v1/safetymonitor/" + String(GetDeviceNumber()) + "/setup'>";
-    html += "<h2>WiFi Configuration</h2>";
-    html += "<label for='wifi_ssid'>WiFi SSID:</label>";
-    html += "<input type='text' id='wifi_ssid' name='wifi_ssid' maxlength='31' value='" + String(wifiConfig.getSSID()) + "' required>";
-    html += "<label for='wifi_password'>WiFi Password:</label>";
-    html += "<input type='password' id='wifi_password' name='wifi_password' maxlength='63' value='' placeholder='Enter new password or leave empty'>";
-    html += "<div class='help-text' style='color: #ff6600;'><strong>Warning:</strong> Device will restart after saving WiFi settings.</div>";
-    html += "<input type='submit' value='Save WiFi Settings'>";
-    html += "</form></div>";
+    // Information section
+    html += "<div class='link-section'>";
+    html += "<strong>System Configuration:</strong><br>";
+    html += "Network and WiFi settings are configured via the <a href='/setup/v1/dome/0/setup'>Dome Setup Page</a>";
+    html += "</div>";
 
-    html += "<p style='text-align: center; color: #888; font-size: 0.9em; margin-top: 30px;'>";
-    html += "<a href='/management/v1/description' style='color: #0066cc; text-decoration: none;'>Back to Management API</a>";
+    html += "<p style='text-align: center; margin-top: 30px;'>";
+    html += "<a href='/management/v1/description'>Back to API</a>";
     html += "</p></div></body></html>";
 
     request->send(200, "text/html", html);
