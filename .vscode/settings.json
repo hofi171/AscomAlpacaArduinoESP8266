@@ -34,6 +34,10 @@
       "approve": true,
       "matchCommandLine": true
     },
-    "Set-Content": true
+    "Set-Content": true,
+    "/^C:\\\\Users\\\\peter\\\\\\.platformio\\\\penv\\\\Scripts\\\\platformio\\.exe run$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }

@@ -42,6 +42,21 @@ private:
   String Description;
   uint32_t serverTransID = 0;
 
+protected:
+  /**
+   * @brief Wrapper around the free extractClientIDAndTransactionID that also
+   *        fires the onClientActivity virtual hook so subclasses can implement
+   *        activity-based watchdog logic without touching every handler.
+   */
+  bool extractIDsAndTrack(AsyncWebServerRequest *request, bool fromBody,
+                          int &clientID, int &clientTransID) {
+    bool result = extractClientIDAndTransactionID(request, fromBody, clientID, clientTransID);
+    if (result) {
+      onClientActivity(clientID);
+    }
+    return result;
+  }
+
 public:
   /**
    * @brief Constructor for AlpacaDeviceSwitch
@@ -181,7 +196,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -222,7 +237,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -268,7 +283,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -314,7 +329,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -360,7 +375,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -406,7 +421,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -452,7 +467,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -498,7 +513,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -544,7 +559,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -590,7 +605,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -636,7 +651,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -682,7 +697,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -747,7 +762,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -800,7 +815,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -853,7 +868,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -906,7 +921,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -955,7 +970,7 @@ public:
       return;
     }
 
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -980,7 +995,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1016,7 +1031,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1052,7 +1067,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1088,7 +1103,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1098,6 +1113,8 @@ public:
       request->send(400, "application/json", message);
       return;
     }
+
+    onClientConnectRequest(clientIDInt);
 
     String message;
     DynamicJsonBuffer jsonBuff(256);
@@ -1119,7 +1136,7 @@ public:
       return;
     }
     
-    if (!extractClientIDAndTransactionID(request, !isGet, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, !isGet, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1136,6 +1153,11 @@ public:
         sendInvalidParamResponse(request, clientIDInt, clientTransID, serverTransID, "connected", "Connected");
         return;
       }
+      if (connected) {
+        onClientConnectRequest(clientIDInt);
+      } else {
+        onClientDisconnectRequest(clientIDInt);
+      }
     }
 
     String message;
@@ -1151,7 +1173,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1175,7 +1197,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1199,7 +1221,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1224,7 +1246,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, true, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, true, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1234,6 +1256,8 @@ public:
       request->send(400, "application/json", message);
       return;
     }
+
+    onClientDisconnectRequest(clientIDInt);
 
     String message;
     DynamicJsonBuffer jsonBuff(256);
@@ -1248,7 +1272,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1272,7 +1296,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1296,7 +1320,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1320,7 +1344,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();
@@ -1344,7 +1368,7 @@ public:
     int clientIDInt = 0;
     int clientTransID = 0;
     
-    if (!extractClientIDAndTransactionID(request, false, clientIDInt, clientTransID)) {
+    if (!extractIDsAndTrack(request, false, clientIDInt, clientTransID)) {
       String message;
       DynamicJsonBuffer jsonBuff(256);
       JsonObject &root = jsonBuff.createObject();

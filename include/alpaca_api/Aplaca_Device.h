@@ -120,6 +120,26 @@ private:
         LOG_DEBUG("registerCommonDeviceHandlers Done!");
     }
 
+protected:
+    /**
+     * @brief Called whenever a valid client ID is extracted from a request.
+     *        Override in subclasses to implement activity tracking / watchdog.
+     * @param clientID The ClientID extracted from the Alpaca request
+     */
+    virtual void onClientActivity(int /*clientID*/) {}
+
+    /**
+     * @brief Called when a client explicitly connects (PUT /connect or PUT /connected=true).
+     * @param clientID The ClientID of the connecting client
+     */
+    virtual void onClientConnectRequest(int /*clientID*/) {}
+
+    /**
+     * @brief Called when a client explicitly disconnects (PUT /disconnect or PUT /connected=false).
+     * @param clientID The ClientID of the disconnecting client
+     */
+    virtual void onClientDisconnectRequest(int /*clientID*/) {}
+
 public:
     //Interface
     virtual void registerHandlers(AsyncWebServer &server)=0;

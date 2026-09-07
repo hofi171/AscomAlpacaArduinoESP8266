@@ -111,6 +111,20 @@ private:
   bool pendingSaveAllEeprom;        // Save request deferred from HTTP handler to loop context
   bool ledDisabled;                 // True when onboard LED should be disabled (GPIO2 HIGH)
 
+  // ---- Client connection tracking / watchdog ----
+  // When the last connected Alpaca client disconnects (or times out), all dew
+  // heaters are disabled so they don't run unattended.
+  static const int           MAX_TRACKED_CLIENTS      = 8;
+  static const unsigned long CLIENT_WATCHDOG_TIMEOUT_MS = 300000UL; // 5 minutes
+
+  struct ClientEntry {
+    int           id;
+    unsigned long lastSeenMs;
+    bool          isConnected; // true after explicit connect, false = just activity
+  };
+  ClientEntry   _clients[MAX_TRACKED_CLIENTS];
+  int           _clientCount;  // entries in use
+
   // EEPROM address map (bytes 0-148 are used by AplacaDevice / WiFiConfig)
   static const int      EEPROM_SW_MAGIC_ADDR = 149;
   static const int      EEPROM_SW_DATA_ADDR  = 151;
@@ -798,6 +812,112 @@ private:
     }
   }
 
+  // ---- Client tracking helpers ----
+
+  /** Returns the index of clientID in _clients[], or -1 if not found. */
+  int findClientEntry(int clientID) {
+    for (int i = 0; i < _clientCount; i++) {
+      if (_clients[i].id == clientID) return i;
+    }
+    return -1;
+  }
+
+  /** Update last-seen timestamp for a client already in the tracking table. */
+  void onClientActivity(int clientID) override {
+    int idx = findClientEntry(clientID);
+    if (idx >= 0) {
+      _clients[idx].lastSeenMs = millis();
+    }
+  }
+
+  /** Explicit connect: add or update the client entry and mark as connected. */
+  void onClientConnectRequest(int clientID) override {
+    int idx = findClientEntry(clientID);
+    if (idx >= 0) {
+      _clients[idx].lastSeenMs  = millis();
+      _clients[idx].isConnected = true;
+    } else if (_clientCount < MAX_TRACKED_CLIENTS) {
+      _clients[_clientCount].id          = clientID;
+      _clients[_clientCount].lastSeenMs  = millis();
+      _clients[_clientCount].isConnected = true;
+      _clientCount++;
+      LOG_INFO("Alpaca client " + String(clientID) + " connected. Total connected: " + String(connectedClientCount()));
+    } else {
+      LOG_WARN("Client table full, cannot track client " + String(clientID));
+    }
+  }
+
+  /** Explicit disconnect: remove the client and, if none remain, disable heaters. */
+  void onClientDisconnectRequest(int clientID) override {
+    removeClientEntry(clientID);
+  }
+
+  /** Remove client entry and disable heaters if no connected clients remain. */
+  void removeClientEntry(int clientID) {
+    int idx = findClientEntry(clientID);
+    if (idx < 0) return;
+    // Compact the array
+    for (int i = idx; i < _clientCount - 1; i++) {
+      _clients[i] = _clients[i + 1];
+    }
+    _clientCount--;
+    LOG_INFO("Alpaca client " + String(clientID) + " disconnected. Connected remaining: " + String(connectedClientCount()));
+    if (connectedClientCount() == 0) {
+      LOG_WARN("No Alpaca clients connected — disabling all dew heaters.");
+      disableAllDewHeaters();
+    }
+  }
+
+  /** Count entries that are explicitly connected (not just tracked for activity). */
+  int connectedClientCount() const {
+    int count = 0;
+    for (int i = 0; i < _clientCount; i++) {
+      if (_clients[i].isConnected) count++;
+    }
+    return count;
+  }
+
+  /** Disable power output on every DewHeater-type switch. */
+  void disableAllDewHeaters() {
+    for (int i = 0; i < maxSwitch; i++) {
+      if (switches[i].type == SwitchType::DewHeater && switches[i].enabled) {
+        switches[i].enabled = false;
+        if (dewHeaters[i] != nullptr) {
+          dewHeaters[i]->enablePidControl(false);
+          dewHeaters[i]->setHeaterPowerPercent(0.0f);
+        }
+        LOG_WARN("DewHeater switch " + String(i) + " disabled (no connected clients).");
+      }
+    }
+  }
+
+  /**
+   * Expire clients that haven't been seen within CLIENT_WATCHDOG_TIMEOUT_MS.
+   * Called from update() so it runs in the main loop.
+   */
+  void checkClientWatchdog() {
+    if (_clientCount == 0) return;
+    unsigned long now = millis();
+    for (int i = _clientCount - 1; i >= 0; i--) {
+      if (_clients[i].isConnected &&
+          (now - _clients[i].lastSeenMs) >= CLIENT_WATCHDOG_TIMEOUT_MS) {
+        LOG_WARN("Alpaca client " + String(_clients[i].id) +
+                 " timed out (no activity for " +
+                 String(CLIENT_WATCHDOG_TIMEOUT_MS / 1000) + "s).");
+        // Compact the array (same logic as removeClientEntry but inline)
+        int clientID = _clients[i].id;
+        for (int j = i; j < _clientCount - 1; j++) {
+          _clients[j] = _clients[j + 1];
+        }
+        _clientCount--;
+        if (connectedClientCount() == 0) {
+          LOG_WARN("All Alpaca clients timed out — disabling all dew heaters.");
+          disableAllDewHeaters();
+        }
+      }
+    }
+  }
+
 public:
   /**
    * @brief Constructor for ArduinoSwitch
@@ -813,8 +933,12 @@ public:
       maxSwitch(num_switches),
       pendingRecreateMask(0),
       pendingSaveAllEeprom(false),
-      ledDisabled(false) {
+      ledDisabled(false),
+      _clientCount(0) {
     
+    // Zero-initialise the client tracking table
+    memset(_clients, 0, sizeof(_clients));
+
     // Allocate switch array
     switches = new SwitchData[maxSwitch];
     dewHeaters = new DewHeater*[maxSwitch];
@@ -1445,6 +1569,7 @@ public:
   }
 
   void update() {
+    checkClientWatchdog();
     enforceReservedSwitchRoles();
     processDeferredMaintenance();
     for (int i = 0; i < maxSwitch; i++) {
