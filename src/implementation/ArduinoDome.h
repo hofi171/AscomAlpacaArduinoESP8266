@@ -536,7 +536,8 @@ private:
               digitalWrite(shutterCloseDrivePin, shutterCloseDriveLowActive ? HIGH : LOW);
             }
           }
-          case SHUTTER_CLOSED:
+          break;
+        case SHUTTER_CLOSED:
             LOG_INFO("Shutter is CLOSED, checking close sensor");
             if (digitalRead(shutterCloseSensorPin) != (shutterCloseSensorLowActive ? LOW : HIGH)) {
               shutterStatus = SHUTTER_ERROR;
