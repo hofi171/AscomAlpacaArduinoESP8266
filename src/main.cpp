@@ -116,20 +116,20 @@ void setup()
    
     LOG_INFO("Start dome = new ArduinoDome(...);");
     // pin 5= shutter open drive, pin 4= shutter close drive, pin 3= shutter open sensor, pin 2= shutter close sensor
-    dome = new ArduinoDome(HOSTNAME, 0, "Arduino Alpaca Dome based on ESP8266", server, true, false, -1, -1, -1, 5, 4, 3, 2, -1); 
+    //dome = new ArduinoDome(HOSTNAME, 0, "Arduino Alpaca Dome based on ESP8266", server, true, false, -1, -1, -1, 5, 4, 3, 2, -1); 
     LOG_INFO("Done dome = new ArduinoDome(...);");
 
 
     LOG_INFO("Start management->registerDevice(...) dome;");
-    management->registerDevice(server, dome->GetDeviceName(), dome->GetDeviceType(), dome->GetDeviceNumber(), dome);
+    //management->registerDevice(server, dome->GetDeviceName(), dome->GetDeviceType(), dome->GetDeviceNumber(), dome);
     LOG_INFO("Done management->registerDevice(...) dome;");
 
     LOG_INFO("Start safetyMonitor = new ArduinoSafetyMonitor(...);");
-    safetyMonitor = new ArduinoSafetyMonitor(HOSTNAME, 0, "Arduino Alpaca Safety Monitor based on ESP8266", server, -1, dome); // Pass dome pointer to safety monitor
+   // safetyMonitor = new ArduinoSafetyMonitor(HOSTNAME, 0, "Arduino Alpaca Safety Monitor based on ESP8266", server, -1, dome); // Pass dome pointer to safety monitor
     LOG_INFO("Done safetyMonitor = new ArduinoSafetyMonitor(...);");
 
     LOG_INFO("Start management->registerDevice(...) safetyMonitor;");
-    management->registerDevice(server, safetyMonitor->GetDeviceName(), safetyMonitor->GetDeviceType(), safetyMonitor->GetDeviceNumber(), safetyMonitor);
+   // management->registerDevice(server, safetyMonitor->GetDeviceName(), safetyMonitor->GetDeviceType(), safetyMonitor->GetDeviceNumber(), safetyMonitor);
     LOG_INFO("Done management->registerDevice(...) safetyMonitor;");
 
     LOG_INFO("Start coverCalibrator = new ArduinoCoverCalibrator(...);");
@@ -183,7 +183,7 @@ void setup()
 
 void loop(void)
 {
- dome->update(); // Update dome state (handles movement and shutter control)
+ //dome->update(); // Update dome state (handles movement and shutter control)
   coverCalibrator->update(); // Update cover calibrator state (handles cover and relay control)
 
   // Handle Alpaca Discovery requests

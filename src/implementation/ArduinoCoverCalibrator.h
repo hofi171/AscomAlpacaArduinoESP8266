@@ -69,6 +69,9 @@ private:
   static const int CC_EEPROM_CONFIG_ADDR = 354;  // Packed: relay_inverted (bit 0), use_servo (bit 1)
   static const uint16_t CC_EEPROM_VALID_MARKER = 0xCC41;  // "CC" + "A"lpha
 
+  static const int SERVO_MIN_PULSE=400;
+  static const int SERVO_MAX_PULSE=2200;
+
   void saveSettingsToEEPROM() {
     EEPROM.put(CC_EEPROM_RELAY_PIN_ADDR, relayPin);
     EEPROM.put(CC_EEPROM_COVER_OPEN_PIN_ADDR, coverOpenPin);
@@ -154,13 +157,14 @@ private:
       int startAngle = coverDirection ? servoClosedAngle : servoOpenAngle;
       int endAngle = coverDirection ? servoOpenAngle : servoClosedAngle;
       currentServoAngle = startAngle + (int)((endAngle - startAngle) * progress);
-      coverServo.write(currentServoAngle);
+      coverServo.write(endAngle);
+        LOG_INFO("move Servo to angle %d", endAngle);
       
       // Check if movement is complete
       if (progress >= 1.0f) {
         coverMoving = false;
         coverState = coverDirection ? COVER_OPEN : COVER_CLOSED;
-        LOG_DEBUG("Servo cover movement complete. State:", coverState == COVER_OPEN ? "OPEN" : "CLOSED");
+        LOG_INFO("Servo cover movement complete. State:", coverState == COVER_OPEN ? "OPEN" : "CLOSED");
       }
       return;
     }
@@ -172,7 +176,7 @@ private:
       // Determine final state based on direction
       // coverDirection: true = opening, false = closing
       coverState = coverDirection ? COVER_OPEN : COVER_CLOSED;
-      LOG_DEBUG("Cover movement complete. State:", coverState == COVER_OPEN ? "OPEN" : "CLOSED");
+      LOG_INFO("Cover movement complete. State:", coverState == COVER_OPEN ? "OPEN" : "CLOSED");
       
       // Stop cover motor (if pins are configured)
       if (coverOpenPin >= 0) digitalWrite(coverOpenPin, LOW);
@@ -293,7 +297,8 @@ public:
     
     // Initialize servo for cover control
     if (useServo && coverOpenPin >= 0) {
-      coverServo.attach(coverOpenPin);
+      
+      coverServo.attach(coverOpenPin, SERVO_MIN_PULSE, SERVO_MAX_PULSE );
       coverServo.write(servoClosedAngle);  // Initialize to closed position
       currentServoAngle = servoClosedAngle;
       LOG_DEBUG("Servo initialized on pin:", coverOpenPin, " - Open angle:", servoOpenAngle, " Closed angle:", servoClosedAngle);
@@ -514,7 +519,7 @@ public:
     if (enable && !useServo && coverOpenPin >= 0) {
       // Enable servo
       if (!coverServo.attached()) {
-        coverServo.attach(coverOpenPin);
+        coverServo.attach(coverOpenPin, SERVO_MIN_PULSE, SERVO_MAX_PULSE);
         coverServo.write(servoClosedAngle);
         LOG_DEBUG("Servo enabled on pin:", coverOpenPin);
       }
@@ -796,7 +801,7 @@ public:
     if (page == "gpio") {
       html += F("<h2>GPIO Configuration</h2>");
       html += F("<p>Relay Pin: ") + String(relayPin) + F("</p>");
-      html += F("<p>Open Pin: ") + String(coverOpenPin) + F("</p>");
+      html += F("<p>Open Pin / Servo Pin: ") + String(coverOpenPin) + F("</p>");
       html += F("<p>Close Pin: ") + String(coverClosePin) + F("</p>");
       html += F("<p>Open Sensor: ") + String(coverOpenSensorPin) + F("</p>");
       html += F("<p>Close Sensor: ") + String(coverCloseSensorPin) + F("</p>");
@@ -833,8 +838,8 @@ public:
       html += F("<label><input type='checkbox' name='use_servo' value='1'");
       html += useServo ? F(" checked") : F("");
       html += F("> Enable Servo</label><br>");
-      html += F("<label>Open Angle: <input type='number' name='servo_open_angle' min='0' max='180' value='") + String(servoOpenAngle) + F("'></label><br>");
-      html += F("<label>Closed Angle: <input type='number' name='servo_closed_angle' min='0' max='180' value='") + String(servoClosedAngle) + F("'></label><br>");
+      html += F("<label>Open Angle: <input type='number' name='servo_open_angle' min='0' max='360' value='") + String(servoOpenAngle) + F("'></label><br>");
+      html += F("<label>Closed Angle: <input type='number' name='servo_closed_angle' min='0' max='360' value='") + String(servoClosedAngle) + F("'></label><br>");
       html += F("<input type='hidden' name='servo_update' value='1'>");
       html += F("<input type='hidden' name='page' value='servo'>");
       html += F("<button type='submit'>Save</button></form>");
@@ -851,11 +856,12 @@ public:
       }
       html += F("</p>");
       html += F("<p>Relay Pin: ") + String(relayPin) + F("</p>");
-      html += F("<p>Open Pin: ") + String(coverOpenPin) + F("</p>");
+      html += F("<p>Open Pin / Servo Pin: ") + String(coverOpenPin) + F("</p>");
       html += F("<p>Close Pin: ") + String(coverClosePin) + F("</p>");
       html += F("<p>Duration: ") + String(coverDuration) + F(" ms</p>");
       html += F("<p>Relay Inverted: ") + String(relayInverted ? "Yes" : "No") + F("</p>");
       html += F("<p>Servo Enabled: ") + String(useServo ? "Yes" : "No") + F("</p>");
+      html += F("<p>Servo Angles: ") + String(servoOpenAngle) + F(" / ") + String(servoClosedAngle) + F("</p>");
     }
 
     html += F("</body></html>");
